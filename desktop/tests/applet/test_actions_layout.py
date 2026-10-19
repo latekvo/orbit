@@ -8,7 +8,7 @@ import pytest
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QToolButton, QWidget
 
-from conftest import make_mock
+from applet_helpers import make_mock
 from orbit.applet import actions as acts
 from orbit.applet import icons
 from orbit.applet.client import DaemonClient
