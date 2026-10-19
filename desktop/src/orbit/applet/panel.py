@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import Any
 
@@ -16,6 +17,8 @@ from .cards import ActivityCard, ArtView, ElidedLabel
 from .client import DaemonClient
 from .model import activity_key, device_state, device_status_text, devices_summary, now_ms, parse_host_port
 from .theme import Theme
+
+log = logging.getLogger("orbit.applet.panel")
 
 PANEL_WIDTH = 384
 PANEL_MAX_HEIGHT = 600
@@ -117,19 +120,28 @@ class ActivitiesPage(QWidget):
             card.tick(now)
 
     def refresh(self, *_: Any) -> None:
-        activities = [a for a in self.client.activities if isinstance(a, dict) and a.get("id")]
         names = {d.get("id"): d.get("name") or "Phone" for d in self.client.devices}
         reconnecting = {d.get("id") for d in self.client.devices if device_state(d) == "reconnecting"}
 
-        seen = set()
-        for a in activities:
+        # One activity the UI cannot render is logged and left out; it never hides the others.
+        activities, seen = [], set()
+        for a in self.client.activities:
+            if not isinstance(a, dict) or not isinstance(a.get("id"), str) or not a["id"]:
+                continue
             key = activity_key(a)
-            seen.add(key)
             card = self.cards.get(key)
-            if card is None:
-                self.cards[key] = ActivityCard(self.client, self.theme, a)
-            else:
-                card.update_activity(a)
+            try:
+                if card is None:
+                    self.cards[key] = ActivityCard(self.client, self.theme, a)
+                else:
+                    card.update_activity(a)
+            except Exception:
+                log.exception("cannot show activity %s", key)
+                if card is not None:
+                    self.cards.pop(key).deleteLater()
+                continue
+            seen.add(key)
+            activities.append(a)
         for key in list(self.cards):
             if key not in seen:
                 self.cards.pop(key).deleteLater()
@@ -469,6 +481,7 @@ class Panel(QWidget):
         self.back.setObjectName("backButton")
         self.back.setIcon(icons.icon("back", theme.text))
         self.back.setToolTip("Back")
+        self.back.setAccessibleName("Back")
         self.back.clicked.connect(self.show_activities)
         self.logo = ArtView(22, 6)
         self.logo.set_pixmap(icons.icon("orbit", theme.accent).pixmap(QSize(44, 44)))
@@ -486,6 +499,7 @@ class Panel(QWidget):
         self.devices_button.setIcon(icons.icon("phone", theme.text))
         self.devices_button.setIconSize(QSize(18, 18))
         self.devices_button.setToolTip("Devices")
+        self.devices_button.setAccessibleName("Devices")
         self.devices_button.clicked.connect(self.show_devices)
         header.addWidget(self.back)
         header.addWidget(self.logo)

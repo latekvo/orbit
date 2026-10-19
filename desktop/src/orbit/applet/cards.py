@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-import copy
+import math
 from typing import Any, Callable
 
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
@@ -16,11 +16,13 @@ from shiboken6 import isValid
 from . import actions as acts
 from . import icons
 from .client import DaemonClient
-from .model import action_failure, chrono_value_ms, format_clock, media_position_ms, now_ms
+from .model import (INT32_MAX, action_failure, chrono_value_ms, format_clock, media_position_ms, now_ms,
+                    sanitize_activity)
 from .theme import Theme
 
 ERROR_VISIBLE_MS = 5000
 SPIN_FRAME_MS = 60
+KEY_SEEK_SETTLE_MS = 400
 STALE_OPACITY = 0.55
 PILL_MAX_TEXT = 120
 
@@ -155,7 +157,33 @@ class SeekSlider(QSlider):
     def __init__(self, parent: QWidget | None = None):
         super().__init__(Qt.Orientation.Horizontal, parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.setAccessibleName("Playback position")
         self.sliderReleased.connect(lambda: self.seekRequested.emit(self.value()))
+        # Arrow-key steps are batched into one seek once the keys go quiet.
+        self._key_seek = QTimer(self, singleShot=True, interval=KEY_SEEK_SETTLE_MS)
+        self._key_seek.timeout.connect(lambda: self.seekRequested.emit(self.value()))
+
+    def is_held(self) -> bool:
+        """The user owns the value: dragging, or a keyboard seek not sent yet."""
+        return self.isSliderDown() or self._key_seek.isActive()
+
+    def keyPressEvent(self, event) -> None:  # noqa: N802
+        before = self.value()
+        super().keyPressEvent(event)
+        if self.value() != before:
+            self._key_seek.start()
+
+    def wheelEvent(self, event) -> None:  # noqa: N802
+        event.ignore()  # the panel scrolls; a wheel tick is too easy to trigger as a seek
+
+    def hideEvent(self, event) -> None:  # noqa: N802
+        # Hidden mid-drag, the release never arrives: drop the drag without seeking.
+        if self.isSliderDown():
+            self.blockSignals(True)
+            self.setSliderDown(False)
+            self.blockSignals(False)
+        self._key_seek.stop()
+        super().hideEvent(event)
 
     def mousePressEvent(self, event) -> None:  # noqa: N802
         if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
@@ -189,6 +217,7 @@ class ActionStrip(QWidget):
         self.more.setObjectName("overflow")
         self.more.setProperty("role", "media")
         self.more.setToolTip("More actions")
+        self.more.setAccessibleName("More actions")
         self.more.setIcon(icons.icon("more", theme.text))
         self.more.setFixedSize(32, 32)
         self.more.setIconSize(QSize(20, 20))
@@ -332,6 +361,7 @@ class ActivityCard(QFrame):
         self._spin.timeout.connect(self._spin_step)
         # While stale, extrapolation stops at the moment the card went stale.
         self._frozen_at: float | None = None
+        self._seek_unit = 1
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 10, 12, 10)
@@ -464,7 +494,7 @@ class ActivityCard(QFrame):
         return color.name() if color.isValid() else self.theme.accent
 
     def update_activity(self, activity: dict) -> None:
-        self.activity = copy.deepcopy(activity)
+        self.activity = sanitize_activity(activity)
         self._optimistic_media = None
         a = self.activity
         stale = self.stale
@@ -494,24 +524,29 @@ class ActivityCard(QFrame):
         prog = a.get("progress")
         self.progress_row.setVisible(bool(prog))
         if prog:
-            maximum = int(prog.get("max") or 0)
+            maximum = prog.get("max") or 0
             if prog.get("indeterminate") or maximum <= 0:
                 self.progress.setRange(0, 0)
                 self.progress_text.hide()
             else:
-                value = max(0, min(int(prog.get("value") or 0), maximum))
-                self.progress.setRange(0, maximum)
-                self.progress.setValue(value)
+                value = max(0.0, min(prog.get("value") or 0, maximum))
+                unit = _unit(maximum)
+                self.progress.setRange(0, int(maximum / unit))
+                self.progress.setValue(int(value / unit))
                 self.progress_text.setText(f"{round(100 * value / maximum)}%")
                 self.progress_text.show()
         self.progress.setStyleSheet(f"QProgressBar::chunk {{ background: {accent}; border-radius: 3px; }}")
 
         media = a.get("media") or {}
-        has_seek = bool(media.get("durationMs"))
+        has_seek = (media.get("durationMs") or 0) > 0
         self.seek_box.setVisible(has_seek)
         if has_seek:
             if not self.seek.isSliderDown():
-                self.seek.setRange(0, int(media["durationMs"]))
+                # Slider steps are ms, or coarser when the duration overflows Qt's int range.
+                self._seek_unit = _unit(media["durationMs"])
+                self.seek.setRange(0, int(media["durationMs"] / self._seek_unit))
+                self.seek.setSingleStep(max(1, 5_000 // self._seek_unit))
+                self.seek.setPageStep(max(1, 30_000 // self._seek_unit))
             self.duration.setText(format_clock(media["durationMs"]))
             self.seek.setStyleSheet(
                 f"QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}")
@@ -541,14 +576,14 @@ class ActivityCard(QFrame):
             self.chrono.setText(format_clock(chrono_value_ms(chrono, now)))
         media = self._media()
         if media.get("durationMs"):
-            if not self.seek.isSliderDown():
+            if not self.seek.is_held():
                 pos = media_position_ms(media, now)
                 self.seek.blockSignals(True)
-                self.seek.setValue(int(pos))
+                self.seek.setValue(int(pos / self._seek_unit))
                 self.seek.blockSignals(False)
                 self.elapsed.setText(format_clock(pos))
             else:
-                self.elapsed.setText(format_clock(self.seek.value()))
+                self.elapsed.setText(format_clock(self.seek.value() * self._seek_unit))
 
     # -- actions ---------------------------------------------------------------------------
 
@@ -689,7 +724,12 @@ class ActivityCard(QFrame):
     def _style_button(self, btn: QToolButton, action: dict) -> None:
         kind = btn.property("kind")
         primary = kind == "transport" and action["id"] in ("media.play", "media.pause")
-        btn.setProperty("toggleState", acts.toggle_state(action) or "")
+        state = acts.toggle_state(action) or ""
+        if btn.property("toggleState") != state:
+            btn.setProperty("toggleState", state)
+            btn.style().unpolish(btn)
+            btn.style().polish(btn)
+        btn.setAccessibleDescription({"active": "On", "one": "On, repeat one", "inactive": "Off"}.get(state, ""))
         ic = self._glyph_icon(action, "#ffffff" if primary else None)
         btn.setIcon(ic if ic is not None else QIcon())
         if kind == "pill":
@@ -712,10 +752,12 @@ class ActivityCard(QFrame):
         row.setSpacing(6)
         field = QLineEdit(draft)
         field.setObjectName(f"input:{aid}")
+        field.setAccessibleName((action.get("input") or {}).get("label") or action.get("label") or "Reply")
         field.setClearButtonEnabled(True)
         send = QToolButton()
         send.setObjectName(f"action:{aid}")
         send.setProperty("label", action.get("label") or "Send")
+        send.setAccessibleName(action.get("label") or "Send")
         send.setIcon(icons.icon("send", self.accent()))
         send.setIconSize(QSize(20, 20))
         send.setCursor(Qt.CursorShape.PointingHandCursor)
@@ -797,8 +839,9 @@ class ActivityCard(QFrame):
         media = self.activity.get("media") or {}
         if not media.get("seekable"):
             return
-        self._optimistic_media = {**media, "positionMs": value, "positionAtMs": now_ms()}
-        self.trigger("media.seek", int(value))
+        position = value * self._seek_unit
+        self._optimistic_media = {**media, "positionMs": position, "positionAtMs": now_ms()}
+        self.trigger("media.seek", position)
         self.tick(now_ms())
 
     def show_error(self, message: str, gentle: bool = False) -> None:
@@ -808,6 +851,11 @@ class ActivityCard(QFrame):
         self.error.setText(message)
         self.error.show()
         self._error_timer.start(ERROR_VISIBLE_MS)
+
+
+def _unit(span: float) -> int:
+    """Step size that fits `span` into Qt's int range."""
+    return max(1, math.ceil(span / INT32_MAX))
 
 
 def _clear_layout(layout) -> None:

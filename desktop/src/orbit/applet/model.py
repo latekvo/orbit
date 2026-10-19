@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import copy
+import math
 import os
 import sys
 import time
@@ -50,11 +52,16 @@ def chrono_value_ms(chrono: Mapping[str, Any], now: float) -> float:
 
 def format_clock(ms: float) -> str:
     """M:SS or H:MM:SS, with a leading '-' for negative values (an overrun count-down)."""
+    if not abs(ms) < CLOCK_MAX_MS:
+        return "--:--"
     sign = "-" if ms < 0 else ""
     total = int(abs(ms) // 1000)
     h, rem = divmod(total, 3600)
     m, s = divmod(rem, 60)
     return f"{sign}{h}:{m:02d}:{s:02d}" if h else f"{sign}{m}:{s:02d}"
+
+
+CLOCK_MAX_MS = 10_000 * 3600 * 1000  # past this a clock value is garbage, not time
 
 
 def format_sas(sas: str) -> str:
@@ -137,6 +144,69 @@ def action_failure(error: Mapping[str, Any] | None, result: Any, phone: str, lab
     if code in (ORBITD_DOWN, ORBITD_UNRESPONSIVE):
         return message, False
     return f"{label}: {message or code or 'failed'}", False
+
+
+INT32_MAX = 2**31 - 1  # Qt's int range: slider and progress bar values
+
+
+def _num(v: Any) -> float | None:
+    if isinstance(v, bool) or not isinstance(v, (int, float)) or not math.isfinite(v):
+        return None
+    return float(v)
+
+
+def _text(v: Any) -> str:
+    if isinstance(v, str):
+        return v
+    return str(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else ""
+
+
+def _fields(raw: Any, nums: tuple[str, ...] = (), bools: tuple[str, ...] = (), texts: tuple[str, ...] = ()) -> dict:
+    """The listed keys of `raw` that have the right type; the rest are dropped so .get() defaults apply."""
+    raw = raw if isinstance(raw, Mapping) else {}
+    out: dict[str, Any] = {}
+    for k in nums:
+        if (v := _num(raw.get(k))) is not None:
+            out[k] = v
+    for k in bools:
+        if isinstance(raw.get(k), bool):
+            out[k] = raw[k]
+    for k in texts:
+        if isinstance(raw.get(k), str):
+            out[k] = raw[k]
+    return out
+
+
+def sanitize_activity(raw: Mapping[str, Any]) -> dict:
+    """A copy of a DeviceActivity with every field the UI reads in the type it expects. A phone app
+    controls most of these values, and one odd field must not take the panel down."""
+    a = copy.deepcopy(dict(raw))
+    for k in ("device", "id", "kind", "title", "subtitle", "text", "iconKey", "artKey", "color"):
+        a[k] = _text(raw.get(k))
+    a["app"] = {k: _text(v) for k, v in _fields(raw.get("app"), texts=("id", "name")).items()}
+    a["stale"] = raw.get("stale") is True
+    specs = {
+        "media": (("positionMs", "positionAtMs", "durationMs", "rate"), ("seekable",), ("state",)),
+        "chrono": (("baseMs", "valueMs"), ("running", "countDown"), ()),
+        "progress": (("value", "max"), ("indeterminate",), ()),
+    }
+    for k, (nums, bools, texts) in specs.items():
+        if isinstance(raw.get(k), Mapping):
+            a[k] = _fields(raw[k], nums, bools, texts)
+        else:
+            a.pop(k, None)
+    if a.get("chrono", {}).get("running", True) and "baseMs" not in a.get("chrono", {"baseMs": 0}):
+        del a["chrono"]  # a running clock without a base has nothing to count from
+    actions = []
+    for x in raw.get("actions") if isinstance(raw.get("actions"), list) else []:
+        if not isinstance(x, Mapping) or not isinstance(x.get("id"), str) or not x["id"]:
+            continue
+        action = {"id": x["id"], **_fields(x, bools=("active", "overflow"), texts=("label", "icon"))}
+        if isinstance(x.get("input"), Mapping):
+            action["input"] = _fields(x["input"], texts=("kind", "label"))
+        actions.append(action)
+    a["actions"] = actions
+    return a
 
 
 def activity_key(activity: Mapping[str, Any]) -> tuple[str, str]:

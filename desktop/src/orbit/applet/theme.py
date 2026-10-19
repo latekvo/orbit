@@ -100,6 +100,8 @@ QToolButton[pending="true"] {{ color: {t.muted}; }}
 QToolButton[role="pill"] {{ background: {t.field}; border: 1px solid {t.border}; padding: 3px 8px;
     font-size: 12px; }}
 QToolButton[role="pill"]:hover {{ background: {t.hover}; }}
+QToolButton[role="pill"][toggleState="active"], QToolButton[role="pill"][toggleState="one"] {{
+    color: {t.accent}; border-color: {t.accent}; background: {t.mix(t.accent, 0.12)}; }}
 QToolButton[role="media"] {{ border-radius: 18px; padding: 6px; }}
 QToolButton[role="primary"] {{ border-radius: 20px; padding: 8px; }}
 QPushButton {{ color: {t.text}; background: {t.card}; border: 1px solid {t.border};

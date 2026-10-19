@@ -339,6 +339,7 @@ class MockOrbitd:
         # Accept connections and requests but never answer (a wedged orbitd).
         self.unresponsive = False
         self.action_delay_s: float = 0.0
+        self.method_delay_s: dict[str, float] = {}  # other methods answered this late
         # How long activities.action waits for a "reconnecting" device (orbitd: 5 s).
         self.reconnect_hold_s: float = 5.0
         # How long a dropped device stays "reconnecting" before going "offline" (orbitd: 15 s).
@@ -881,6 +882,11 @@ class MockOrbitd:
                 task.add_done_callback(self._tasks.discard)
                 return
             await self._answer(conn, req_id, method, params, fail, 0)
+        elif self.method_delay_s.get(method):
+            task = asyncio.create_task(self._answer(conn, req_id, method, params, None,
+                                                    self.method_delay_s[method]))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         else:
             await self._answer(conn, req_id, method, params, None, 0)
 

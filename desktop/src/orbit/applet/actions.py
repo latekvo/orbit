@@ -95,12 +95,12 @@ def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleS
     "Like", "Enable shuffle" = currently off), and "<thing> mode X" / "<thing>: X" names the
     current state X. A bare "Shuffle on" may mean either, so it stays neutral."""
     glyph = glyph or icon_for(action)
-    if glyph not in TOGGLE_GLYPHS:
-        return None
     label = " ".join(str(action.get("label") or "").lower().split())
     mode = re.fullmatch(r"[a-z ]+?(?: mode\s*:?|\s*:)\s*([a-z0-9]+)", label)
     from_label: ToggleState = _MODE_STATES.get(mode.group(1)) if mode else None
-    if from_label is None and not mode:
+    if glyph not in TOGGLE_GLYPHS:
+        from_label = None  # labels are only read for known toggles; `active` applies to any action
+    elif from_label is None and not mode:
         if re.match(r"(remove|undo|unlike|undislike|disable|deactivate|stop)\b|turn .+ off$", label):
             from_label = "active"
         elif re.match(r"(enable|activate|start)\b|turn .+ on$|add to (liked|favou?rites)", label) or \
