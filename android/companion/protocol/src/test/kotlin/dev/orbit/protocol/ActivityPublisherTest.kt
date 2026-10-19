@@ -57,6 +57,18 @@ class ActivityPublisherTest {
     }
 
     @Test
+    fun progressWithChangingTextIsStillRateLimited() {
+        fun dl(p: Int) = json("""{"id":"d","title":"Download","text":"$p% done","progress":{"value":$p,"max":100,"indeterminate":false}}""")
+        publisher.submit(dl(1)); publisher.flush()
+        for (p in 2..5) {
+            now += 250
+            publisher.submit(dl(p)); publisher.flush()
+        }
+        assertEquals(2, events.size) // initial + one at the 1 s mark
+        assertEquals("5% done", hub.get("d")!!.str("text"))
+    }
+
+    @Test
     fun removeWinsOverPendingUpsert() {
         publisher.submit(act("x")); publisher.flush()
         publisher.submit(act("y"))

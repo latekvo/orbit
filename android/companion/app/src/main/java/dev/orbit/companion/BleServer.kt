@@ -34,7 +34,9 @@ import java.util.concurrent.Semaphore
 import java.util.concurrent.TimeUnit
 
 /** BLE GATT peripheral transport (spec 1.2). Every failure degrades to a status string, never a crash. */
-@SuppressLint("MissingPermission") // Every entry point checks permissions via hasPermissions() first.
+// start() checks the permissions; callbacks only arrive after it succeeded, and revoking a runtime
+// permission kills the process.
+@SuppressLint("MissingPermission")
 class BleServer(private val context: Context, private val orbit: Orbit) {
     @Volatile var running = false
         private set
@@ -47,7 +49,7 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
     private val notifyLock = Any() // the TX characteristic is shared by every link
     private lateinit var tx: BluetoothGattCharacteristic
 
-    fun hasPermissions(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || listOf(
+    private fun hasPermissions(): Boolean = Build.VERSION.SDK_INT < Build.VERSION_CODES.S || listOf(
         Manifest.permission.BLUETOOTH_CONNECT,
         Manifest.permission.BLUETOOTH_ADVERTISE,
     ).all { context.checkSelfPermission(it) == PackageManager.PERMISSION_GRANTED }

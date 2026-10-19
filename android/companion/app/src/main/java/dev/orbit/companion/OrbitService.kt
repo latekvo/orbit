@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.update
 
 /** Foreground service hosting the TCP server, DNS-SD registration and the BLE peripheral. */
@@ -42,15 +43,24 @@ class OrbitService : Service() {
         nsd = NsdAdvertiser(this) { s -> orbit.transports.update { it.copy(nsd = s) } }.also {
             it.start(orbit.deviceName, port, orbit.deviceId)
         }
-        registerReceiver(btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        // A protected system broadcast still reaches a not-exported receiver.
+        ContextCompat.registerReceiver(
+            this, btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         startBle()
         Log.i(TAG, "service started: tcp port $port, deviceId ${orbit.deviceId}")
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_RESTART_BLE) {
-            stopBle("restarting")
-            startBle()
+        when (intent?.action) {
+            ACTION_RESTART_BLE -> {
+                stopBle("restarting")
+                startBle()
+            }
+            ACTION_RENAME -> nsd?.let { n ->
+                n.stop()
+                tcp?.port?.let { n.start(orbit.deviceName, it, orbit.deviceId) }
+            }
         }
         return START_STICKY
     }
@@ -96,6 +106,7 @@ class OrbitService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1
         const val ACTION_RESTART_BLE = "dev.orbit.companion.RESTART_BLE"
+        const val ACTION_RENAME = "dev.orbit.companion.RENAME"
 
         fun start(context: Context, action: String? = null) {
             context.startForegroundService(Intent(context, OrbitService::class.java).setAction(action))

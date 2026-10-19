@@ -42,6 +42,7 @@ class PairingNotifier(private val context: Context) {
             .setCategory(Notification.CATEGORY_RECOMMENDATION)
             .setContentIntent(open)
             .setOngoing(true)
+            .setOnlyAlertOnce(true)
             .addAction(Notification.Action.Builder(null, "Reject", decision(session.id, false)).build())
             .addAction(Notification.Action.Builder(null, "Accept", decision(session.id, true)).build())
             .build()

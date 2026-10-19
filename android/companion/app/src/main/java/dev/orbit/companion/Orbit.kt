@@ -1,8 +1,6 @@
 package dev.orbit.companion
 
 import android.content.Context
-import android.os.Build
-import android.provider.Settings
 import android.util.Log
 import dev.orbit.protocol.ActivityHub
 import dev.orbit.protocol.ActivityPublisher
@@ -59,6 +57,9 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     @Volatile var actionExecutor: ActionExecutor? = null
 
+    /** Whether Orbit's own UI is in the foreground (which allows starting other apps' activities). */
+    @Volatile var uiVisible = false
+
     private val _sessions = MutableStateFlow<List<SessionView>>(emptyList())
     val sessionViews: StateFlow<List<SessionView>> = _sessions
     private val _activities = MutableStateFlow<List<JsonObject>>(emptyList())
@@ -72,9 +73,24 @@ class Orbit private constructor(private val context: Context) : SessionHost {
         hub.observe { list -> _activities.value = list }
     }
 
-    val deviceName: String
-        get() = Settings.Global.getString(context.contentResolver, Settings.Global.DEVICE_NAME)?.takeIf { it.isNotBlank() }
-            ?: Build.MODEL
+    private val settings = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val _deviceName = MutableStateFlow(resolveName())
+
+    /** Name sent in hello and used as the DNS-SD instance name; the user's override if set. */
+    val deviceNameFlow: StateFlow<String> = _deviceName
+    val deviceName: String get() = _deviceName.value
+    val customName: String? get() = settings.getString(KEY_NAME, null)
+
+    private fun resolveName() = customName?.takeIf { it.isNotBlank() } ?: DeviceNames.system(context)
+
+    /** Sets (or with blank, clears) the user's name; applies to new sessions and re-registers DNS-SD. */
+    fun setCustomName(name: String) {
+        settings.edit().putString(KEY_NAME, name.trim().takeIf { it.isNotEmpty() }).apply()
+        val resolved = resolveName()
+        if (resolved == _deviceName.value) return
+        _deviceName.value = resolved
+        if (transports.value.serviceRunning) OrbitService.start(context, OrbitService.ACTION_RENAME)
+    }
 
     /** Runs a responder session over [stream] on a background thread. */
     fun startSession(stream: ByteStream, transport: String) {
@@ -138,6 +154,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
     }
 
     companion object {
+        private const val KEY_NAME = "device_name"
         @Volatile private var instance: Orbit? = null
 
         fun get(context: Context): Orbit = instance ?: synchronized(this) {

@@ -91,7 +91,7 @@ class ActivityHub {
 
 /**
  * Debounces activity updates before they reach the [hub] (coalescing bursts of notification
- * updates) and rate-limits updates that only move progress or media position.
+ * updates) and rate-limits updates that only move progress, media position or text.
  */
 class ActivityPublisher(
     private val hub: ActivityHub,
@@ -125,13 +125,6 @@ class ActivityPublisher(
             pending[id] = Pending.Remove
             schedule(clock() + debounceMs)
         }
-    }
-
-    /** Ids submitted (and not removed) including those still pending. */
-    fun knownIds(): Set<String> = synchronized(lock) {
-        val ids = hub.all().mapNotNull { it.str("id") }.toMutableSet()
-        pending.forEach { (id, p) -> if (p is Pending.Remove) ids.remove(id) else ids.add(id) }
-        ids
     }
 
     private fun schedule(at: Long) {
@@ -187,7 +180,11 @@ class ActivityPublisher(
         if (stripChurn(a) != stripChurn(next)) return Change.REAL
         val ma = a["media"] as? JsonObject
         val mb = next["media"] as? JsonObject
-        if (ma != null && mb != null && positionConsistent(ma, mb) && a["progress"] == next["progress"]) return Change.NONE
+        if (ma != null && mb != null && positionConsistent(ma, mb) && a["progress"] == next["progress"] &&
+            a["text"] == next["text"] && a["subtitle"] == next["subtitle"]
+        ) {
+            return Change.NONE
+        }
         return Change.CHURN
     }
 
@@ -201,8 +198,11 @@ class ActivityPublisher(
         return abs(pa + (tb - ta) * rate - pb) < 1500
     }
 
+    /** Progress notifications usually restate progress in their text ("45% - 68 MB"), so text counts as churn too. */
     private fun stripChurn(o: JsonObject): JsonObject {
         val m = o.toMutableMap()
+        m.remove("text")
+        m.remove("subtitle")
         (m["progress"] as? JsonObject)?.let { m["progress"] = JsonObject(it - "value") }
         (m["media"] as? JsonObject)?.let { m["media"] = JsonObject(it - "positionMs" - POSITION_AT) }
         return JsonObject(m)

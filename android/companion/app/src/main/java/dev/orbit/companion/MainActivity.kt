@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -23,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -65,6 +67,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        Orbit.get(this).uiVisible = true
+    }
+
+    override fun onPause() {
+        Orbit.get(this).uiVisible = false
+        super.onPause()
+    }
+
     private fun missingPermissions(): List<String> {
         val wanted = buildList {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -89,6 +101,8 @@ class MainActivity : ComponentActivity() {
         val peers by orbit.peers.peers.collectAsStateWithLifecycle()
         val activities by orbit.activities.collectAsStateWithLifecycle()
         val connected by orbit.listenerConnected.collectAsStateWithLifecycle()
+        val name by orbit.deviceNameFlow.collectAsStateWithLifecycle()
+        var nameDraft by remember { mutableStateOf(orbit.customName ?: "") }
         var resumeTick by remember { mutableStateOf(0) }
         val owner = LocalLifecycleOwner.current
         DisposableEffect(owner) {
@@ -98,6 +112,7 @@ class MainActivity : ComponentActivity() {
         }
         val granted = remember(resumeTick, connected) { listenerGranted() }
         val missing = remember(resumeTick) { missingPermissions() }
+        val overlay = remember(resumeTick) { Settings.canDrawOverlays(this) }
 
         var forgetting by remember { mutableStateOf<PinnedPeer?>(null) }
         forgetting?.let { p ->
@@ -132,7 +147,20 @@ class MainActivity : ComponentActivity() {
         LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Text("Orbit", style = MaterialTheme.typography.headlineMedium)
-                Text("${orbit.deviceName} · ${orbit.deviceId}", style = MaterialTheme.typography.bodySmall)
+                Text("$name · ${orbit.deviceId}", style = MaterialTheme.typography.bodySmall)
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = nameDraft,
+                        onValueChange = { nameDraft = it },
+                        label = { Text("Device name") },
+                        placeholder = { Text(DeviceNames.system(this@MainActivity)) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = { orbit.setCustomName(nameDraft) }) { Text("Save") }
+                }
             }
             item {
                 Card(Modifier.fillMaxWidth()) {
@@ -153,6 +181,12 @@ class MainActivity : ComponentActivity() {
                                     Text("Grant access")
                                 }
                             }
+                        }
+                        Text("Open apps from computer: " + if (overlay) "allowed" else "not allowed")
+                        if (!overlay) {
+                            OutlinedButton(onClick = {
+                                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                            }) { Text("Allow opening apps") }
                         }
                         if (missing.isNotEmpty()) {
                             Button(onClick = { permissionLauncher.launch(missing.toTypedArray()) }) { Text("Allow notifications & Bluetooth") }
