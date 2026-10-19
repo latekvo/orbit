@@ -123,7 +123,6 @@ class Session:
         if self.closed.is_set() or self.close_reason:
             return
         self.close_reason = reason
-        log.info("session %s with %s (%s) closing: %s", self.id, self.peer.name, self.peer.id, reason)
         if bye:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(self.send({"t": "bye", "reason": reason}), 2)
@@ -133,6 +132,7 @@ class Session:
         if self.closed.is_set():
             return
         self.close_reason = self.close_reason or "closed"
+        log.info("session %s with %s (%s) closed: %s", self.id, self.peer.name, self.peer.id, self.close_reason)
         with contextlib.suppress(Exception):
             self.channel.close()
         current = asyncio.current_task()
