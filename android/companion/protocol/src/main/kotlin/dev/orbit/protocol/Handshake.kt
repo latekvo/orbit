@@ -18,6 +18,9 @@ import java.security.SecureRandom
 const val VERSION = 1
 const val MAX_FRAME = 1 shl 20
 
+/** Largest plaintext handshake frame (spec 2); hello bodies are a few hundred bytes. */
+const val MAX_HANDSHAKE_FRAME = 4096
+
 class ProtocolError(val code: String, override val message: String = "") :
     Exception(if (message.isEmpty()) code else "$code: $message")
 
@@ -54,18 +57,21 @@ open class FrameStream(val stream: ByteStream) : Closeable {
     private val input = DataInputStream(stream.input)
     private val writeLock = Any()
 
-    open fun readFrame(): ByteArray {
+    /** Reads one frame of at most [max] bytes. The body buffer grows with the bytes actually received. */
+    open fun readFrame(max: Int = MAX_FRAME): ByteArray {
         val length = try {
             input.readInt()
         } catch (e: EOFException) {
             throw ProtocolError("closed", "stream closed")
         }
-        if (length <= 0 || length > MAX_FRAME) throw ProtocolError("bad_frame", "frame length ${length.toUInt()}")
-        val body = ByteArray(length)
-        try {
-            input.readFully(body)
-        } catch (e: EOFException) {
-            throw ProtocolError("closed", "stream closed mid-frame")
+        if (length <= 0 || length > max) throw ProtocolError("bad_frame", "frame length ${length.toUInt()}")
+        var body = ByteArray(minOf(length, READ_CHUNK))
+        var n = 0
+        while (n < length) {
+            if (n == body.size) body = body.copyOf(minOf(length, body.size * 2))
+            val r = input.read(body, n, body.size - n)
+            if (r < 0) throw ProtocolError("closed", "stream closed mid-frame")
+            n += r
         }
         return body
     }
@@ -80,6 +86,10 @@ open class FrameStream(val stream: ByteStream) : Closeable {
     }
 
     override fun close() = stream.close()
+
+    private companion object {
+        const val READ_CHUNK = 16 * 1024
+    }
 }
 
 data class Peer(val id: String, val name: String, val platform: String, val static: ByteArray) {
@@ -177,7 +187,7 @@ object Handshake {
             },
         )
         frames.writeFrame(commit)
-        val helloR = frames.readFrame()
+        val helloR = frames.readFrame(MAX_HANDSHAKE_FRAME)
         val (peer, peerEph) = parseHello(helloR, "responder")
         frames.writeFrame(helloI)
         val th = transcriptHash(commit, helloR, helloI)
@@ -198,7 +208,7 @@ object Handshake {
         nonce: ByteArray = freshNonce(),
     ): SecureChannel {
         try {
-            val commit = frames.readFrame()
+            val commit = frames.readFrame(MAX_HANDSHAKE_FRAME)
             val msg = decode(commit)
             if (msg.type != "commit") throw ProtocolError("bad_commit", "expected commit")
             if (!isVersion1(msg["v"])) {
@@ -211,7 +221,7 @@ object Handshake {
             }
             val helloR = helloBody("responder", identity, eph, nonce, name, platform)
             frames.writeFrame(helloR)
-            val helloI = frames.readFrame()
+            val helloI = frames.readFrame(MAX_HANDSHAKE_FRAME)
             // Hash the exact received bytes, never a re-serialization.
             if (!sha256(helloI).contentEquals(commitment)) throw ProtocolError("bad_commit", "hello does not match commitment")
             val (peer, peerEph) = parseHello(helloI, "initiator")

@@ -99,9 +99,14 @@ class OrbitService : Service() {
     override fun onDestroy() {
         EventLog.log("service destroyed")
         runCatching { unregisterReceiver(btReceiver) }
-        orbit.shutdownSessions("service stopped")
+        val ending = orbit.shutdownSessions("service stopped")
         nsd?.stop()
         tcp?.stop()
+        // Stopping BLE drops its links at once, so let their `bye` go out first.
+        val deadline = System.nanoTime() + BYE_FLUSH_MS * 1_000_000
+        ending.filter { it.transport == "ble" }.forEach {
+            it.awaitClosed(maxOf(0, (deadline - System.nanoTime()) / 1_000_000))
+        }
         stopBle("stopped")
         orbit.transports.value = TransportStatus()
         super.onDestroy()
@@ -122,6 +127,7 @@ class OrbitService : Service() {
 
     companion object {
         private const val NOTIFICATION_ID = 1
+        private const val BYE_FLUSH_MS = 1_000L
         const val ACTION_ENSURE_BLE = "dev.orbit.companion.ENSURE_BLE"
         const val ACTION_RENAME = "dev.orbit.companion.RENAME"
         private const val EXTRA_SOURCE = "source"

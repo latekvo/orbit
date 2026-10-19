@@ -133,7 +133,7 @@ class VectorsTest {
     /** Frames wrapper that records every frame body read and written. */
     private class RecordingFrames(stream: ByteStream, val read: MutableList<ByteArray>, val written: MutableList<ByteArray>) :
         FrameStream(stream) {
-        override fun readFrame(): ByteArray = super.readFrame().also { read += it }
+        override fun readFrame(max: Int): ByteArray = super.readFrame(max).also { read += it }
         override fun writeFrame(body: ByteArray) {
             written += body
             super.writeFrame(body)

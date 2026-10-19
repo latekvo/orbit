@@ -7,11 +7,13 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.IOException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
+import java.util.concurrent.LinkedBlockingQueue
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 
 /** Everything the responder session needs from the device it runs on. */
@@ -31,11 +33,15 @@ interface SessionHost {
 }
 
 class SessionTimeouts(
-    val handshakeMs: Long = 30_000,
+    val handshakeMs: Long = 10_000,
     val pingAfterMs: Long = 10_000,
     val idleMs: Long = 30_000,
     val pairingMs: Long = 120_000,
     val tickMs: Long = 1_000,
+    /** How long a session may stay unpaired without starting pairing (spec 3.4). */
+    val unpairedMs: Long = 30_000,
+    /** Outbound messages that may wait for a slow or non-reading peer before the session closes. */
+    val maxQueuedSends: Int = 1024,
 )
 
 /** Runs one responder-side session (spec 3-5) over [stream]. Call [run] on a dedicated thread. */
@@ -57,7 +63,10 @@ class ResponderSession(
     val id: Long = nextId.incrementAndGet()
 
     private val lock = Any()
-    private val sender: ExecutorService = Executors.newSingleThreadExecutor { r -> Thread(r, "orbit-send-$id").apply { isDaemon = true } }
+    private val sender = ThreadPoolExecutor(1, 1, 0, TimeUnit.MILLISECONDS, LinkedBlockingQueue(timeouts.maxQueuedSends)) { r ->
+        Thread(r, "orbit-send-$id").apply { isDaemon = true }
+    }
+    private val sendOverflow = AtomicBoolean()
     private var channel: SecureChannel? = null
     private var ticker: ScheduledFuture<*>? = null
     private val sentArt = HashSet<String>() // sender thread only
@@ -80,6 +89,7 @@ class ResponderSession(
     private var remoteReady: Boolean? = null
     private val startedAt = clock()
     private var pairingStartedAt = 0L
+    private var establishedAt = 0L
     @Volatile private var lastRecv = startedAt
     @Volatile private var lastSent = startedAt
 
@@ -90,7 +100,10 @@ class ResponderSession(
 
     /** Blocks until the session ends. Never throws. */
     fun run() {
-        ticker = scheduler.scheduleAtFixedRate({ tick() }, timeouts.tickMs, timeouts.tickMs, TimeUnit.MILLISECONDS)
+        synchronized(lock) {
+            if (state == State.CLOSED) return
+            ticker = scheduler.scheduleAtFixedRate({ tick() }, timeouts.tickMs, timeouts.tickMs, TimeUnit.MILLISECONDS)
+        }
         try {
             val ch = handshake(FrameStream(stream))
             synchronized(lock) {
@@ -99,6 +112,7 @@ class ResponderSession(
                 peer = ch.peer
                 sas = ch.sas
                 localPinned = host.isPinned(ch.peer)
+                establishedAt = clock()
                 state = State.UNPAIRED
             }
             lastRecv = clock()
@@ -113,7 +127,8 @@ class ResponderSession(
             close(e.code)
         } catch (e: IOException) {
             close("io: ${e.message}")
-        } catch (e: RuntimeException) {
+        } catch (e: Throwable) {
+            // Includes errors such as OutOfMemoryError: a peer must never take the process down.
             close("error: $e")
         } finally {
             close("ended")
@@ -221,6 +236,8 @@ class ResponderSession(
                 })
             }
         }
+        // markClosed sets CLOSED before unsubscribing: a close that raced the subscribe is caught here.
+        if (state == State.CLOSED) hub.unsubscribe(hubListener)
     }
 
     private fun onAction(msg: JsonObject) {
@@ -268,6 +285,7 @@ class ResponderSession(
             State.HANDSHAKE -> if (now - startedAt >= timeouts.handshakeMs) close("handshake timeout")
             else -> {
                 if (now - lastRecv >= timeouts.idleMs) return close("idle timeout")
+                if (state == State.UNPAIRED && now - establishedAt >= timeouts.unpairedMs) return close("unpaired timeout")
                 if (state == State.PAIRING && now - pairingStartedAt >= timeouts.pairingMs) return close("pairing timeout")
                 if (now - lastSent >= timeouts.pingAfterMs) {
                     lastSent = now // avoid queueing a ping per tick while a slow link drains
@@ -280,6 +298,8 @@ class ResponderSession(
     // --- sending (sender thread) ---
 
     private fun enqueue(block: () -> Unit) {
+        // Once a message is dropped nothing after it may go out: the peer would see a gap.
+        if (sendOverflow.get()) return
         try {
             sender.execute {
                 try {
@@ -288,8 +308,14 @@ class ResponderSession(
                     close("send failed: ${e.message}")
                 }
             }
-        } catch (_: java.util.concurrent.RejectedExecutionException) {
-            // Session already closed.
+        } catch (_: RejectedExecutionException) {
+            if (sender.isShutdown || !sendOverflow.compareAndSet(false, true)) return
+            // Off this thread: hub listeners enqueue while the hub iterates its listeners under its lock.
+            try {
+                scheduler.execute { close("send queue full") }
+            } catch (_: RejectedExecutionException) {
+                close("send queue full")
+            }
         }
     }
 
@@ -328,7 +354,7 @@ class ResponderSession(
         if (!markClosed(reason)) return
         try {
             sender.execute { runCatching { stream.close() } }
-        } catch (_: java.util.concurrent.RejectedExecutionException) {
+        } catch (_: RejectedExecutionException) {
             runCatching { stream.close() }
         }
         sender.shutdown()
@@ -336,6 +362,9 @@ class ResponderSession(
         scheduler.schedule({ runCatching { stream.close() } }, 5, TimeUnit.SECONDS)
         host.sessionChanged(this)
     }
+
+    /** Waits until queued sends (such as the `bye` from [shutdown]) are flushed or dropped, after a close. */
+    fun awaitClosed(timeoutMs: Long): Boolean = sender.awaitTermination(timeoutMs, TimeUnit.MILLISECONDS)
 
     fun close(reason: String) {
         if (!markClosed(reason)) return
@@ -345,12 +374,14 @@ class ResponderSession(
     }
 
     private fun markClosed(reason: String): Boolean {
+        val t: ScheduledFuture<*>?
         synchronized(lock) {
             if (state == State.CLOSED) return false
             state = State.CLOSED
             closeReason = reason
+            t = ticker
         }
-        ticker?.cancel(false)
+        t?.cancel(false)
         hub.unsubscribe(hubListener)
         return true
     }
