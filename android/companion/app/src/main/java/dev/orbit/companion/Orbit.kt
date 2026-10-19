@@ -1,7 +1,6 @@
 package dev.orbit.companion
 
 import android.content.Context
-import android.util.Log
 import dev.orbit.protocol.ActivityHub
 import dev.orbit.protocol.ActivityPublisher
 import dev.orbit.protocol.ByteStream
@@ -89,18 +88,16 @@ class Orbit private constructor(private val context: Context) : SessionHost {
         val resolved = resolveName()
         if (resolved == _deviceName.value) return
         _deviceName.value = resolved
-        if (transports.value.serviceRunning) OrbitService.start(context, OrbitService.ACTION_RENAME)
+        if (transports.value.serviceRunning) OrbitService.start(context, OrbitService.ACTION_RENAME, source = "rename")
     }
 
     /** Runs a responder session over [stream] on a background thread. */
     fun startSession(stream: ByteStream, transport: String) {
         val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler)
         sessions[session.id] = session
+        EventLog.log("session ${session.id} open ($transport)")
         sessionChanged(session)
-        sessionThreads.execute {
-            session.run()
-            Log.i(TAG, "session ${session.id} ($transport) ended: ${session.closeReason}")
-        }
+        sessionThreads.execute { session.run() }
     }
 
     fun session(id: Long): ResponderSession? = sessions[id]
@@ -123,7 +120,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     override fun pin(peer: Peer) {
         peers.pin(peer)
-        Log.i(TAG, "paired with ${peer.name} (${peer.id})")
+        EventLog.log("paired with ${peer.name} (${peer.id})")
     }
 
     override fun unpin(peerId: String) {
@@ -131,7 +128,9 @@ class Orbit private constructor(private val context: Context) : SessionHost {
     }
 
     override fun sessionChanged(session: ResponderSession) {
-        if (session.state == ResponderSession.State.CLOSED) sessions.remove(session.id)
+        if (session.state == ResponderSession.State.CLOSED && sessions.remove(session.id) != null) {
+            EventLog.log("session ${session.id} closed (${session.transport}, ${session.peer?.name ?: "no peer"}): ${session.closeReason}")
+        }
         if (session.state == ResponderSession.State.PAIRING && session.localDecision == null) {
             pairingNotifier.show(session)
         } else {

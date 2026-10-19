@@ -205,13 +205,20 @@ its own clock. Media positions are valid at the message's `now`.
 ```jsonc
 {"id": "media.pause", "label": "Pause", "icon": "pause",
  "input": {"kind": "text", "label": "Reply"},   // input optional
- "active": true}                                // optional, toggles only
+ "active": true,                                // optional, toggles only
+ "overflow": true}                              // optional, default false
 ```
 
 `active` (optional bool): the current state of a toggle action (like, shuffle, repeat, mute...),
 `true` = currently on. Producers SHOULD set it whenever they know the state, because labels
 are ambiguous across apps ("Shuffle on" may name the current state or the action to take).
 Consumers MUST prefer it over anything inferred from the label.
+
+`overflow: true` means the phone's own UI does not show this action as a button. Consumers
+SHOULD put such actions behind an overflow ("More") menu rather than inline, keeping the
+listed order. `open` is the activity's primary tap target: bind it to clicking the card or
+its header, not to a button. `dismiss` belongs in the overflow menu whether or not it is
+marked.
 
 Well-known `icon` values: `play`, `pause`, `next`, `previous`, `stop`, `close`, `reply`,
 `add`, `remove`, `check`, `mute`, `unmute`, `like`, `dislike`, `shuffle`, `repeat`,

@@ -11,7 +11,6 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -64,6 +63,7 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
             if (!adapter.isEnabled) return "bluetooth off"
             val adv = adapter.bluetoothLeAdvertiser ?: return "unavailable: peripheral mode not supported"
             val server = manager.openGattServer(context, callback) ?: return "unavailable: could not open GATT server"
+            EventLog.log("gatt server opened")
             gatt = server
             advertiser = adv
             tx = BluetoothGattCharacteristic(
@@ -124,8 +124,15 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
     }
 
     private val advertiseCallback = object : AdvertiseCallback() {
-        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) = status("advertising")
-        override fun onStartFailure(errorCode: Int) = status("advertising failed ($errorCode)")
+        override fun onStartSuccess(settingsInEffect: AdvertiseSettings) {
+            EventLog.log("ble advertising started")
+            status("advertising")
+        }
+
+        override fun onStartFailure(errorCode: Int) {
+            EventLog.log("ble advertising failed ($errorCode)")
+            status("advertising failed ($errorCode)")
+        }
     }
 
     private fun status(s: String) {
@@ -138,17 +145,27 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
         links.values.forEach { it.close() }
         links.clear()
         runCatching { advertiser?.stopAdvertising(advertiseCallback) }
-        runCatching { gatt?.close() }
+        gatt?.let {
+            runCatching { it.close() }
+            EventLog.log("gatt server closed")
+        }
         gatt = null
         advertiser = null
     }
 
     private val callback = object : BluetoothGattServerCallback() {
         override fun onServiceAdded(status: Int, service: BluetoothGattService) {
+            EventLog.log("gatt service added (status $status)")
             if (status == BluetoothGatt.GATT_SUCCESS) startAdvertising() else status("GATT service failed ($status)")
         }
 
         override fun onConnectionStateChange(device: BluetoothDevice, status: Int, newState: Int) {
+            val state = when (newState) {
+                BluetoothProfile.STATE_CONNECTED -> "connected"
+                BluetoothProfile.STATE_DISCONNECTED -> "disconnected"
+                else -> "state $newState"
+            }
+            EventLog.log("ble ${device.address} $state (status $status)")
             if (newState == BluetoothProfile.STATE_DISCONNECTED) {
                 links.remove(device.address)?.close()
                 mtus.remove(device.address)
@@ -157,6 +174,7 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
         }
 
         override fun onMtuChanged(device: BluetoothDevice, mtu: Int) {
+            EventLog.log("ble ${device.address} mtu $mtu")
             mtus[device.address] = mtu
         }
 
@@ -177,10 +195,10 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
                 val enable = value != null && value.isNotEmpty() && (value[0].toInt() and 1) != 0
                 // A new subscription starts a new session; any previous one on this link ends.
                 links.remove(device.address)?.close()
+                EventLog.log("ble ${device.address} notifications ${if (enable) "enabled" else "disabled"}")
                 if (enable) {
                     val link = BleLink(device)
                     links[device.address] = link
-                    Log.i(TAG, "ble session from ${device.address}")
                     orbit.startSession(link, "ble")
                 }
             }
@@ -274,7 +292,7 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
             override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
 
             override fun write(b: ByteArray, off: Int, len: Int) {
-                val chunkSize = ((mtus[device.address] ?: 23) - 3).coerceIn(20, 512)
+                val chunkSize = ((mtus[device.address] ?: 23) - 3).coerceIn(20, MAX_NOTIFICATION)
                 var pos = off
                 while (pos < off + len) {
                     val n = minOf(chunkSize, off + len - pos)
@@ -286,30 +304,46 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
 
         private fun sendChunk(chunk: ByteArray) {
             synchronized(notifyLock) {
-                val deadline = System.currentTimeMillis() + NOTIFY_TIMEOUT_MS
+                val start = System.currentTimeMillis()
+                var busy = 0
+                var lastCode = 0
                 while (true) {
                     if (closed) throw IOException("ble link closed")
                     val server = gatt ?: throw IOException("gatt server stopped")
-                    val queued = try {
+                    val code = try {
                         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            server.notifyCharacteristicChanged(device, tx, false, chunk) == BluetoothStatusCodes.SUCCESS
+                            server.notifyCharacteristicChanged(device, tx, false, chunk)
                         } else {
                             @Suppress("DEPRECATION")
                             tx.value = chunk
                             @Suppress("DEPRECATION")
-                            server.notifyCharacteristicChanged(device, tx, false)
+                            if (server.notifyCharacteristicChanged(device, tx, false)) NOTIFY_OK else -1
                         }
                     } catch (e: SecurityException) {
                         throw IOException("bluetooth permission revoked", e)
                     }
-                    if (queued) break
-                    // The stack is busy (e.g. a previous notification still in flight): retry briefly.
-                    if (System.currentTimeMillis() > deadline) throw IOException("notification not accepted")
+                    if (code == NOTIFY_OK) break
+                    busy++
+                    lastCode = code
+                    // The stack is busy (e.g. congested): retry briefly.
+                    if (System.currentTimeMillis() - start > NOTIFY_TIMEOUT_MS) {
+                        EventLog.log("ble ${device.address} notify not accepted for ${NOTIFY_TIMEOUT_MS} ms ($busy tries, last code $lastCode)")
+                        throw IOException("notification not accepted ($lastCode)")
+                    }
                     Thread.sleep(10)
                 }
-                if (!sent.tryAcquire(NOTIFY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) throw IOException("onNotificationSent timeout")
+                if (busy > 0) {
+                    EventLog.log("ble ${device.address} stack busy: notify accepted after $busy tries, ${System.currentTimeMillis() - start} ms (last code $lastCode)")
+                }
+                if (!sent.tryAcquire(NOTIFY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+                    EventLog.log("ble ${device.address} onNotificationSent timeout (${NOTIFY_TIMEOUT_MS} ms)")
+                    throw IOException("onNotificationSent timeout")
+                }
                 if (closed) throw IOException("ble link closed")
-                if (sentStatus != BluetoothGatt.GATT_SUCCESS) throw IOException("notification failed ($sentStatus)")
+                if (sentStatus != BluetoothGatt.GATT_SUCCESS) {
+                    EventLog.log("ble ${device.address} notification failed (status $sentStatus)")
+                    throw IOException("notification failed ($sentStatus)")
+                }
             }
         }
 
@@ -333,5 +367,9 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
         val TX_UUID: UUID = UUID.fromString("616dfa5e-069e-4839-8335-87edbeb2c1a5")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val NOTIFY_TIMEOUT_MS = 5_000L
+        /** BluetoothStatusCodes.SUCCESS (API 31). */
+        private const val NOTIFY_OK = 0
+        /** 251-byte LE data PDU minus L2CAP and ATT headers: each notification fits one link-layer packet. */
+        private const val MAX_NOTIFICATION = 244
     }
 }

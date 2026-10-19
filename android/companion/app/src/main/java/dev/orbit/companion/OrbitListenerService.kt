@@ -27,6 +27,7 @@ import android.widget.TextView
 import dev.orbit.protocol.Art
 import dev.orbit.protocol.Icons
 import dev.orbit.protocol.POSITION_AT
+import dev.orbit.protocol.SystemUi
 import dev.orbit.protocol.sha256
 import dev.orbit.protocol.str
 import dev.orbit.protocol.toHex
@@ -56,6 +57,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     private val allNotifs = HashMap<String, StatusBarNotification>() // sbn key -> latest
     private val controllers = LinkedHashMap<String, MediaController>() // activity id -> controller
     private val callbacks = HashMap<MediaSession.Token, MediaController.Callback>()
+    private val exportedMedia = HashSet<String>() // media activity ids currently published
 
     private val sessionsListener = MediaSessionManager.OnActiveSessionsChangedListener { list ->
         handler.post { updateControllers(list.orEmpty()) }
@@ -70,18 +72,20 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     }
 
     override fun onDestroy() {
-        thread.quitSafely()
+        // super.onDestroy() runs onListenerDisconnected, whose cleanup is posted to the worker.
         super.onDestroy()
+        thread.quitSafely()
     }
 
     override fun onListenerConnected() {
         orbit.actionExecutor = this
         orbit.listenerConnected.value = true
         // The system keeps this listener bound, so it is the most reliable place to (re)start serving.
+        EventLog.log("notification listener connected")
         try {
-            OrbitService.start(this)
+            OrbitService.start(this, source = "notification listener")
         } catch (e: IllegalStateException) {
-            Log.w(TAG, "could not start the foreground service from the listener", e)
+            EventLog.log("service start from listener refused: $e")
         }
         val active = runCatching { activeNotifications?.toList().orEmpty() }.getOrDefault(emptyList())
         handler.post {
@@ -99,6 +103,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     }
 
     override fun onListenerDisconnected() {
+        EventLog.log("notification listener disconnected")
         if (orbit.actionExecutor === this) orbit.actionExecutor = null
         orbit.listenerConnected.value = false
         handler.post {
@@ -117,6 +122,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     override fun onNotificationRemoved(sbn: StatusBarNotification) {
         handler.post {
             allNotifs.remove(sbn.key)
+            mediaControllerOf(sbn)?.let { publishMedia(it.key, refresh = false) }
             val id = notifId(sbn)
             if (notifs.remove(id) != null) orbit.publisher.remove(id)
         }
@@ -130,9 +136,14 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         allNotifs[sbn.key] = sbn
         val id = notifId(sbn)
         val custom = readCustomView(sbn)
-        // A custom-view clock stays an activity while paused (its view then has no running Chronometer).
-        val live = isLive(sbn, custom) || (custom != null && id in notifs)
-        val activity = if (live && !isExposedMedia(sbn)) map(sbn, id, custom) else null
+        // Once live, a notification stays an activity while it offers actions: paused clocks
+        // (stock and ColorOS stopwatches) lose every liveness signal but keep Resume.
+        val live = isLive(sbn, custom) || (id in notifs && !sbn.notification.actions.isNullOrEmpty())
+        val media = mediaControllerOf(sbn)
+        // The player's buttons can come from this notification (visibleMediaButtons).
+        media?.let { publishMedia(it.key, refresh = false) }
+        // The session replaces its notification only while the session itself is exported.
+        val activity = if (live && media?.key !in exportedMedia) map(sbn, id, custom) else null
         if (activity == null) {
             if (notifs.remove(id) != null) orbit.publisher.remove(id)
             return
@@ -141,9 +152,14 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         orbit.publisher.submit(activity.first, activity.second)
     }
 
-    private fun isExposedMedia(sbn: StatusBarNotification): Boolean {
-        val token = sbn.notification.extras.parcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) ?: return false
-        return controllers.values.any { it.sessionToken == token }
+    /** The exposed media session this notification belongs to, as (activity id, controller). */
+    private fun mediaControllerOf(sbn: StatusBarNotification): Map.Entry<String, MediaController>? {
+        val token = sbn.notification.extras.parcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) ?: return null
+        return controllers.entries.firstOrNull { it.value.sessionToken == token }
+    }
+
+    private fun notifActions(n: Notification) = n.actions.orEmpty().map {
+        SystemUi.NotifAction(it.title?.toString(), it.getIcon() != null, it.actionIntent != null, it.isContextual)
     }
 
     /** What a custom content view shows; only read for notifications that have actions. */
@@ -252,16 +268,19 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
                     put("running", true)
                 }
             }
+            val mediaStyle = e.getString(Notification.EXTRA_TEMPLATE) in MEDIA_TEMPLATES
+            val overflow = SystemUi.notificationButtons(notifActions(n), mediaStyle)
             put("actions", buildJsonArray {
                 n.actions.orEmpty().forEachIndexed { i, a ->
-                    add(action("notif.$i", a.title?.toString().orEmpty().ifBlank { "Action ${i + 1}" }) {
+                    val over = overflow[i] ?: return@forEachIndexed
+                    add(action("notif.$i", actionLabel(a, i), overflow = over) {
                         a.remoteInputs?.firstOrNull { it.allowFreeFormInput }?.let { ri ->
                             putJsonObject("input") { put("kind", "text"); put("label", ri.label?.toString() ?: "Reply") }
                         }
                     })
                 }
                 if (n.contentIntent != null) add(action("open", "Open"))
-                if (sbn.isClearable) add(action("dismiss", "Dismiss", icon = "close"))
+                if (sbn.isClearable) add(action("dismiss", "Dismiss", icon = "close", overflow = true))
             })
         }
         return activity to newArts
@@ -278,6 +297,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
             if (wanted[id]?.sessionToken != c.sessionToken) {
                 callbacks.remove(c.sessionToken)?.let { runCatching { c.unregisterCallback(it) } }
                 controllers.remove(id)
+                exportedMedia.remove(id)
                 orbit.publisher.remove(id)
             }
         }
@@ -291,6 +311,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
                     if (controllers[id]?.sessionToken == c.sessionToken) {
                         controllers.remove(id)
                         callbacks.remove(c.sessionToken)
+                        exportedMedia.remove(id)
                         orbit.publisher.remove(id)
                         refreshNotifications()
                     }
@@ -308,8 +329,10 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         allNotifs.values.toList().forEach { onPosted(it) }
     }
 
-    private fun publishMedia(id: String) {
+    /** Publishes or removes the media activity; with [refresh], re-evaluates notifications when that flips. */
+    private fun publishMedia(id: String, refresh: Boolean = true) {
         val c = controllers[id] ?: return
+        val wasExported = id in exportedMedia
         val state = c.playbackState
         val meta = c.metadata
         val title = meta?.getString(MediaMetadata.METADATA_KEY_TITLE) ?: meta?.getString(MediaMetadata.METADATA_KEY_DISPLAY_TITLE)
@@ -324,6 +347,8 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         }
         if (st == null || state == null) {
             orbit.publisher.remove(id)
+            exportedMedia.remove(id)
+            if (refresh && wasExported) refreshNotifications()
             return
         }
         val newArts = mutableListOf<Art>()
@@ -355,24 +380,53 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
                 put("rate", if (st == "playing") state.playbackSpeed.toDouble() else 1.0)
                 put("seekable", has(PlaybackState.ACTION_SEEK_TO))
             }
+            // SystemUI's isPlayingState: pause unless paused, stopped, idle, failed or connecting.
+            val playPause = when {
+                state.state in NOT_PLAYING_STATES -> "media.play".takeIf { has(PlaybackState.ACTION_PLAY) || has(PlaybackState.ACTION_PLAY_PAUSE) }
+                else -> "media.pause".takeIf { has(PlaybackState.ACTION_PAUSE) || has(PlaybackState.ACTION_PLAY_PAUSE) }
+            }
+            val previous = "media.previous".takeIf { has(PlaybackState.ACTION_SKIP_TO_PREVIOUS) }
+            val next = "media.next".takeIf { has(PlaybackState.ACTION_SKIP_TO_NEXT) }
+            val stop = "media.stop".takeIf { has(PlaybackState.ACTION_STOP) }
+            val custom = state.customActions.map { "media.custom.${it.action}" to (it.name?.toString() ?: it.action) }
+            val visible = visibleMediaButtons(c, playPause, previous, next, stop, custom)
             put("actions", buildJsonArray {
-                if (has(PlaybackState.ACTION_SKIP_TO_PREVIOUS)) add(action("media.previous", "Previous", "previous"))
-                if (st == "playing") {
-                    if (has(PlaybackState.ACTION_PAUSE) || has(PlaybackState.ACTION_PLAY_PAUSE)) add(action("media.pause", "Pause", "pause"))
-                } else if (has(PlaybackState.ACTION_PLAY) || has(PlaybackState.ACTION_PLAY_PAUSE)) {
-                    add(action("media.play", "Play", "play"))
-                }
-                if (has(PlaybackState.ACTION_SKIP_TO_NEXT)) add(action("media.next", "Next", "next"))
-                if (has(PlaybackState.ACTION_STOP)) add(action("media.stop", "Stop", "stop"))
-                state.customActions.forEach { ca ->
-                    val label = ca.name?.toString() ?: ca.action
-                    add(action("media.custom.${ca.action}", label, Icons.forCustomAction(ca.action, label)))
+                previous?.let { add(action(it, "Previous", "previous", overflow = it !in visible)) }
+                playPause?.let { add(action(it, if (it == "media.pause") "Pause" else "Play", it.removePrefix("media."), overflow = it !in visible)) }
+                next?.let { add(action(it, "Next", "next", overflow = it !in visible)) }
+                stop?.let { add(action(it, "Stop", "stop", overflow = it !in visible)) }
+                state.customActions.zip(custom).forEach { (ca, idName) ->
+                    val (cid, label) = idName
+                    add(action(cid, label, Icons.forCustomAction(ca.action, label), overflow = cid !in visible))
                 }
                 if (c.sessionActivity != null) add(action("open", "Open"))
             })
         }
         orbit.publisher.submit(activity, newArts)
+        exportedMedia.add(id)
+        if (refresh && !wasExported) refreshNotifications()
     }
+
+    /** The ids the phone's media player shows as buttons for this session. */
+    private fun visibleMediaButtons(
+        c: MediaController, playPause: String?, previous: String?, next: String?, stop: String?,
+        custom: List<Pair<String, String>>,
+    ): Set<String> {
+        val sessionDriven = Build.VERSION.SDK_INT >= 33 && targetSdk(c.packageName) >= 33
+        val notification = allNotifs.values.firstOrNull {
+            it.notification.extras.parcelable<MediaSession.Token>(Notification.EXTRA_MEDIA_SESSION) == c.sessionToken
+        }
+        if (sessionDriven || notification == null) {
+            val extras = c.extras
+            return SystemUi.sessionButtons(
+                playPause, previous, next, custom.map { it.first },
+                extras?.getBoolean(SystemUi.RESERVE_PREV) == true, extras?.getBoolean(SystemUi.RESERVE_NEXT) == true,
+            )
+        }
+        return SystemUi.notificationMediaButtons(notifActions(notification.notification), listOfNotNull(previous, playPause, next, stop), custom)
+    }
+
+    private fun targetSdk(pkg: String): Int = runCatching { packageManager.getApplicationInfo(pkg, 0).targetSdkVersion }.getOrDefault(0)
 
     // --- actions ---
 
@@ -380,7 +434,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         val id = activity.str("id") ?: return done(false, "bad activity")
         handler.post {
             val result = runCatching {
-                if (id.startsWith("media:")) performMedia(id, actionId, value) else performNotification(id, actionId, value)
+                if (id.startsWith("media:")) performMedia(id, actionId, value) else performNotification(id, activity, actionId, value)
             }.getOrElse { e -> Log.w(TAG, "action $actionId on $id failed", e); e.message ?: e.toString() }
             done(result == null, result)
         }
@@ -411,22 +465,28 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         return null
     }
 
-    private fun performNotification(id: String, actionId: String, value: JsonElement?): String? {
+    private fun performNotification(id: String, activity: JsonObject, actionId: String, value: JsonElement?): String? {
         val sbn = notifs[id] ?: return "notification gone"
         val n = sbn.notification
         return when {
             actionId == "open" -> openActivity(n.contentIntent ?: return "no content intent")
             actionId == "dismiss" -> { cancelNotification(sbn.key); null }
             actionId.startsWith("notif.") -> {
-                val a = n.actions?.getOrNull(actionId.removePrefix("notif.").toIntOrNull() ?: -1) ?: return "action gone"
+                val i = actionId.removePrefix("notif.").toIntOrNull() ?: -1
+                val a = n.actions?.getOrNull(i) ?: return "action gone"
+                // The exported copy can lag the notification; never fire a different button than the one shown.
+                val shown = (activity["actions"] as? JsonArray)?.firstOrNull { (it as? JsonObject)?.str("id") == actionId }
+                if ((shown as? JsonObject)?.str("label") != actionLabel(a, i)) return "action changed"
+                val pi = a.actionIntent ?: return "action unavailable"
                 val text = (value as? JsonPrimitive)?.takeIf { it.isString }?.content
                 val inputs = a.remoteInputs
+                if (inputs?.any { it.allowFreeFormInput } == true && text.isNullOrBlank()) return "reply text required"
                 if (text != null && !inputs.isNullOrEmpty()) {
                     val fill = Intent()
                     RemoteInput.addResultsToIntent(inputs, fill, Bundle().apply { inputs.forEach { putCharSequence(it.resultKey, text) } })
-                    sendIntent(a.actionIntent, fill)
+                    sendIntent(pi, fill)
                 } else {
-                    sendIntent(a.actionIntent)
+                    sendIntent(pi)
                 }
             }
             else -> "unsupported action"
@@ -465,18 +525,23 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
 
     // --- helpers ---
 
+    private fun actionLabel(a: Notification.Action, i: Int) = a.title?.toString().orEmpty().ifBlank { "Action ${i + 1}" }
+
     private fun appName(pkg: String): String = runCatching {
         @Suppress("DEPRECATION")
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
     }.getOrDefault(pkg)
 
-    private fun action(id: String, label: String, icon: String? = Icons.forLabel(label), extra: JsonObjectBuilder.() -> Unit = {}) =
-        buildJsonObject {
-            put("id", id)
-            put("label", label)
-            icon?.let { put("icon", it) }
-            extra()
-        }
+    private fun action(
+        id: String, label: String, icon: String? = Icons.forLabel(label), overflow: Boolean = false,
+        extra: JsonObjectBuilder.() -> Unit = {},
+    ) = buildJsonObject {
+        put("id", id)
+        put("label", label)
+        icon?.let { put("icon", it) }
+        if (overflow) put("overflow", true)
+        extra()
+    }
 
     companion object {
         /** Notification.FLAG_PROMOTED_ONGOING (API 36). */
@@ -486,6 +551,11 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         /** Notification.EXTRA_CONTAINS_CUSTOM_VIEW (hidden constant). */
         private const val EXTRA_CONTAINS_CUSTOM_VIEW = "android.contains.customView"
         private val EXCLUDED_PACKAGES = setOf("android", "com.android.systemui")
+        private val MEDIA_TEMPLATES = setOf("android.app.Notification\$MediaStyle", "android.app.Notification\$DecoratedMediaCustomViewStyle")
+        private val NOT_PLAYING_STATES = setOf(
+            PlaybackState.STATE_NONE, PlaybackState.STATE_STOPPED, PlaybackState.STATE_PAUSED, PlaybackState.STATE_ERROR,
+            PlaybackState.STATE_CONNECTING, PlaybackState.STATE_BUFFERING,
+        )
         private val LIVE_CATEGORIES = setOf(
             Notification.CATEGORY_TRANSPORT, Notification.CATEGORY_PROGRESS, Notification.CATEGORY_NAVIGATION,
             Notification.CATEGORY_CALL, CATEGORY_STOPWATCH, Notification.CATEGORY_ALARM,

@@ -32,8 +32,8 @@ interface SessionHost {
 
 class SessionTimeouts(
     val handshakeMs: Long = 30_000,
-    val pingAfterMs: Long = 20_000,
-    val idleMs: Long = 60_000,
+    val pingAfterMs: Long = 10_000,
+    val idleMs: Long = 30_000,
     val pairingMs: Long = 120_000,
     val tickMs: Long = 1_000,
 )

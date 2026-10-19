@@ -7,6 +7,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.app.Notification
+import android.provider.Settings
 import dev.orbit.protocol.ResponderSession
 
 const val CHANNEL_PAIRING = "pairing"
@@ -43,11 +44,28 @@ class PairingNotifier(private val context: Context) {
             .setContentIntent(open)
             .setOngoing(true)
             .setOnlyAlertOnce(true)
+            // Swiping the prompt away (possible for ongoing notifications on API 34+) rejects.
+            .setDeleteIntent(decision(session.id, false))
             .addAction(Notification.Action.Builder(null, "Reject", decision(session.id, false)).build())
             .addAction(Notification.Action.Builder(null, "Accept", decision(session.id, true)).build())
             .build()
-        runCatching { nm.notify(notificationId(session.id), n) }
+        if (canNotify()) {
+            nm.notify(notificationId(session.id), n)
+            return
+        }
+        // Without notifications, Orbit's own screen shows the prompt; it may only be opened from
+        // the background with "Display over other apps".
+        if (!Orbit.get(context).uiVisible) {
+            if (Settings.canDrawOverlays(context)) {
+                context.startActivity(Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_SINGLE_TOP))
+            } else {
+                EventLog.log("pairing prompt for $name not shown: notifications are off and Orbit is in the background")
+            }
+        }
     }
+
+    private fun canNotify(): Boolean =
+        nm.areNotificationsEnabled() && (nm.getNotificationChannel(CHANNEL_PAIRING)?.importance ?: 0) != NotificationManager.IMPORTANCE_NONE
 
     fun cancel(sessionId: Long) = nm.cancel(notificationId(sessionId))
 
