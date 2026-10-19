@@ -75,15 +75,49 @@ def parse_host_port(text: str) -> tuple[str, int]:
     return host, int(port)
 
 
+def device_state(device: Mapping[str, Any]) -> str:
+    """"connected", "reconnecting" or "offline"; daemons without `state` only know connected."""
+    state = device.get("state")
+    if state in ("connected", "reconnecting", "offline"):
+        return state
+    return "connected" if device.get("connected") else "offline"
+
+
 def device_status_text(device: Mapping[str, Any]) -> str:
     transport = {"lan": "Wi-Fi", "ble": "Bluetooth"}
-    if device.get("connected"):
+    state = device_state(device)
+    if state == "connected":
         via = transport.get(device.get("transport") or "", device.get("transport") or "")
         return f"Connected via {via}" if via else "Connected"
+    if state == "reconnecting":
+        return "Reconnecting..."
     seen = [transport.get(t, t) for t in device.get("discovered") or []]
     if seen:
         return "Nearby (" + ", ".join(seen) + ")"
     return "Offline"
+
+
+def devices_summary(devices: list[Mapping[str, Any]]) -> str:
+    """One line for the panel header and tray tooltip, e.g. "Pixel 8 connected · Tab reconnecting..."."""
+    paired = [d for d in devices if d.get("paired")]
+    parts = []
+    for state, suffix in (("connected", "connected"), ("reconnecting", "reconnecting...")):
+        names = [d.get("name") or "Phone" for d in paired if device_state(d) == state]
+        if names:
+            parts.append(f"{', '.join(names)} {suffix}")
+    if parts:
+        return " · ".join(parts)
+    if len(paired) == 1:
+        return f"{paired[0].get('name') or 'Phone'} offline"
+    return "No phone connected"
+
+
+def is_reconnecting_error(error: Mapping[str, Any] | None) -> bool:
+    """orbitd held the action for a reconnecting phone and gave up, or lost the link mid-action."""
+    if not error or error.get("code") != "not_connected":
+        return False
+    message = str(error.get("message") or "")
+    return message == "reconnecting" or message.startswith("connection lost")
 
 
 def activity_key(activity: Mapping[str, Any]) -> tuple[str, str]:

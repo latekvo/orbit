@@ -14,7 +14,7 @@ from shiboken6 import isValid
 from . import icons
 from .cards import ActivityCard, ArtView, ElidedLabel
 from .client import DaemonClient
-from .model import activity_key, device_status_text, now_ms, parse_host_port
+from .model import activity_key, device_state, device_status_text, devices_summary, now_ms, parse_host_port
 from .theme import Theme
 
 PANEL_WIDTH = 384
@@ -119,6 +119,7 @@ class ActivitiesPage(QWidget):
     def refresh(self, *_: Any) -> None:
         activities = [a for a in self.client.activities if isinstance(a, dict) and a.get("id")]
         names = {d.get("id"): d.get("name") or "Phone" for d in self.client.devices}
+        reconnecting = {d.get("id") for d in self.client.devices if device_state(d) == "reconnecting"}
 
         seen = set()
         for a in activities:
@@ -147,7 +148,8 @@ class ActivitiesPage(QWidget):
         pos = 0
         for dev in order:
             if grouped:
-                header = QLabel(names.get(dev, dev or "Unknown device"))
+                name = names.get(dev, dev or "Unknown device")
+                header = QLabel(f"{name} - reconnecting..." if dev in reconnecting else name)
                 header.setProperty("role", "section")
                 header.setObjectName("groupHeader")
                 self._headers.append(header)
@@ -172,6 +174,9 @@ class ActivitiesPage(QWidget):
             self.empty.set_state("No phone paired yet",
                                  "Open Orbit on your phone on the same Wi-Fi or nearby with Bluetooth, "
                                  "then pair it here.", "Pair a device")
+        elif back := [d for d in self.client.devices if d.get("paired") and device_state(d) == "reconnecting"]:
+            self.empty.set_state(f"Reconnecting to {back[0].get('name') or 'your phone'}...",
+                                 "The connection dropped. Orbit is getting it back.")
         elif not any(d.get("paired") and d.get("connected") for d in self.client.devices):
             self.empty.set_state("No phone connected",
                                  "Your paired devices are out of reach. Open Orbit on your phone or "
@@ -222,12 +227,14 @@ class DeviceRow(QFrame):
     def update_device(self, device: dict, pairing: bool) -> None:
         self.device = device
         theme = self.page.theme
-        color = theme.accent if device.get("connected") else theme.muted
+        state = device_state(device)
+        color = {"connected": theme.accent, "reconnecting": theme.mix(theme.accent, 0.5)}.get(state, theme.muted)
         self.glyph.setPixmap(icons.icon("phone", color).pixmap(QSize(22, 22)))
         self.name.setFullText(device.get("name") or device.get("id", ""))
         self.status.setFullText("Confirm the pairing code" if pairing else device_status_text(device))
         self.setToolTip(device.get("address") or "")
-        kind = (True, bool(device.get("connected"))) if device.get("paired") else (False,)
+        # A reconnecting device keeps "Disconnect": that also stops orbitd from reconnecting.
+        kind = (True, state != "offline") if device.get("paired") else (False,)
         if kind != self._kind:
             self._kind = kind
             self._rebuild_buttons()
@@ -242,7 +249,7 @@ class DeviceRow(QFrame):
         self.buttons = {}
         self._confirm.stop()
         if self.device.get("paired"):
-            if self.device.get("connected"):
+            if self._kind[1]:
                 self._button("Disconnect", lambda: self._run("devices.disconnect", "Disconnect"))
             else:
                 self._button("Connect", lambda: self._run("devices.connect", "Connect", "Connecting..."))
@@ -536,8 +543,7 @@ class Panel(QWidget):
         elif self.pages.currentWidget() is self.devices_page:
             text = f"Connected to orbitd on {c.status.get('name')}" if c.status.get("name") else "Connected to orbitd"
         else:
-            live = [d.get("name") or "Phone" for d in c.devices if d.get("paired") and d.get("connected")]
-            text = ", ".join(live) + (" connected" if live else "") if live else "No phone connected"
+            text = devices_summary(c.devices)
         self.status.setFullText(text)
 
     def _fit_height(self, *_: Any) -> None:

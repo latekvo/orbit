@@ -8,7 +8,7 @@ from typing import Any, Callable
 from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap,
                            QTextLayout, QTextOption)
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QProgressBar, QSizePolicy,
+from PySide6.QtWidgets import (QFrame, QGraphicsOpacityEffect, QHBoxLayout, QLabel, QLineEdit, QMenu, QProgressBar, QSizePolicy,
                                QSlider, QStyle, QStyleOptionSlider, QToolButton, QVBoxLayout, QWidget)
 
 from shiboken6 import isValid
@@ -16,10 +16,11 @@ from shiboken6 import isValid
 from . import actions as acts
 from . import icons
 from .client import DaemonClient
-from .model import chrono_value_ms, format_clock, media_position_ms, now_ms
+from .model import chrono_value_ms, format_clock, is_reconnecting_error, media_position_ms, now_ms
 from .theme import Theme
 
 ERROR_VISIBLE_MS = 5000
+STALE_OPACITY = 0.55
 PILL_MAX_TEXT = 120
 
 
@@ -322,7 +323,11 @@ class ActivityCard(QFrame):
         self._input_sends: dict[str, QToolButton] = {}
         self.action_strip: ActionStrip | None = None
         self._open_available = False
+        self._open_listed = False
         self._optimistic_media: dict | None = None
+        self._pending: set[str] = set()
+        # While stale, extrapolation stops at the moment the card went stale.
+        self._frozen_at: float | None = None
 
         root = QVBoxLayout(self)
         root.setContentsMargins(12, 10, 12, 10)
@@ -336,9 +341,25 @@ class ActivityCard(QFrame):
         f = self.app_name.font()
         f.setPointSizeF(f.pointSizeF() * 0.9)
         self.app_name.setFont(f)
+        self.stale_badge = QLabel("Reconnecting...")
+        self.stale_badge.setObjectName("staleBadge")
+        self.stale_badge.setProperty("role", "badge")
+        self.stale_badge.hide()
         header.addWidget(self.app_icon)
         header.addWidget(self.app_name, 1)
+        header.addWidget(self.stale_badge)
         root.addLayout(header)
+
+        # What the phone last reported; dimmed while stale. Actions dim by being disabled.
+        self.info = QWidget()
+        info = QVBoxLayout(self.info)
+        info.setContentsMargins(0, 0, 0, 0)
+        info.setSpacing(8)
+        self._dim = QGraphicsOpacityEffect(self.info)
+        self._dim.setOpacity(STALE_OPACITY)
+        self._dim.setEnabled(False)
+        self.info.setGraphicsEffect(self._dim)
+        root.addWidget(self.info)
 
         body = QHBoxLayout()
         body.setSpacing(12)
@@ -361,7 +382,7 @@ class ActivityCard(QFrame):
         self.chrono.setProperty("role", "chrono")
         self.chrono.setFont(self._tabular(self.chrono.font()))
         body.addWidget(self.chrono, 0, Qt.AlignmentFlag.AlignVCenter)
-        root.addLayout(body)
+        info.addLayout(body)
 
         prog_row = QHBoxLayout()
         self.progress = QProgressBar()
@@ -373,7 +394,7 @@ class ActivityCard(QFrame):
         self.progress_row = QWidget()
         self.progress_row.setLayout(prog_row)
         prog_row.setContentsMargins(0, 0, 0, 0)
-        root.addWidget(self.progress_row)
+        info.addWidget(self.progress_row)
 
         self.seek_box = QWidget()
         seek_layout = QVBoxLayout(self.seek_box)
@@ -393,7 +414,7 @@ class ActivityCard(QFrame):
         times.addWidget(self.duration)
         seek_layout.addWidget(self.seek)
         seek_layout.addLayout(times)
-        root.addWidget(self.seek_box)
+        info.addWidget(self.seek_box)
 
         self.actions_box = QWidget()
         self.actions_layout = QVBoxLayout(self.actions_box)
@@ -431,6 +452,14 @@ class ActivityCard(QFrame):
     def activity_id(self) -> str:
         return self.activity.get("id", "")
 
+    @property
+    def stale(self) -> bool:
+        return self.activity.get("stale") is True
+
+    def device_name(self) -> str:
+        dev = next((d for d in self.client.devices if d.get("id") == self.device_id), None)
+        return (dev or {}).get("name") or "your phone"
+
     def accent(self) -> str:
         color = QColor(self.activity.get("color") or "")
         return color.name() if color.isValid() else self.theme.accent
@@ -439,6 +468,13 @@ class ActivityCard(QFrame):
         self.activity = copy.deepcopy(activity)
         self._optimistic_media = None
         a = self.activity
+        stale = self.stale
+        if not stale:
+            self._frozen_at = None
+        elif self._frozen_at is None:
+            self._frozen_at = now_ms()
+        self._dim.setEnabled(stale)
+        self.stale_badge.setVisible(stale)
         app = a.get("app") or {}
         app_name = app.get("name") or app.get("id") or ""
         accent = self.accent()
@@ -478,12 +514,12 @@ class ActivityCard(QFrame):
         if has_seek:
             if not self.seek.isSliderDown():
                 self.seek.setRange(0, int(media["durationMs"]))
-            self.seek.setEnabled(bool(media.get("seekable")))
             self.duration.setText(format_clock(media["durationMs"]))
             self.seek.setStyleSheet(
                 f"QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}")
 
         self._rebuild_actions()
+        self._sync_enabled()
         self.tick(now_ms())
 
     def _load_art(self) -> None:
@@ -499,6 +535,8 @@ class ActivityCard(QFrame):
         return self._optimistic_media or self.activity.get("media") or {}
 
     def tick(self, now: float) -> None:
+        if self._frozen_at is not None:
+            now = min(now, self._frozen_at)
         chrono = self.activity.get("chrono")
         if chrono:
             self.chrono.setText(format_clock(chrono_value_ms(chrono, now)))
@@ -525,7 +563,7 @@ class ActivityCard(QFrame):
             self._actions_sig = slots
             self._build_action_widgets(actions, places, is_media)
         self._apply_actions(actions, places, is_media)
-        self._set_open_target("open" in places)
+        self._open_listed = "open" in places
         self.actions_box.setVisible(any(p != "open" for p in places))
 
     def _build_action_widgets(self, actions: list[dict], places: list[str], is_media: bool) -> None:
@@ -579,12 +617,34 @@ class ActivityCard(QFrame):
                 btn = self._slot_buttons[acts.slot_key(x, is_media)]
                 btn.setObjectName(f"action:{aid}")
                 btn.setProperty("actionId", aid)
-                btn.setToolTip(label)
+                btn.setProperty("label", label)
                 btn.setAccessibleName(label)
                 self._style_button(btn, x)
                 self._buttons[aid] = btn
         if self.action_strip is not None:
             self.action_strip.set_menu_only(menu_only, lambda aid: self.trigger(aid))
+
+    def _sync_enabled(self) -> None:
+        """Pending actions and a stale card disable their controls; fresh data re-enables them."""
+        stale = self.stale
+        hint = f"Reconnecting to {self.device_name()}" if stale else None
+        for aid, btn in self._buttons.items():
+            if aid in self._inputs:
+                field = self._inputs[aid]
+                field.setEnabled(aid not in self._pending)
+                btn.setEnabled(not stale and aid not in self._pending and bool(field.text().strip()))
+            else:
+                btn.setEnabled(not stale and aid not in self._pending)
+            btn.setToolTip(hint or btn.property("label") or "")
+        if self.action_strip is not None:
+            self.action_strip.more.setEnabled(not stale)
+            self.action_strip.more.setToolTip(hint or "More actions")
+        self.seek.setEnabled(bool(self._media().get("seekable")) and not stale)
+        self.seek.setToolTip(hint or "")
+        self._set_open_target(self._open_listed and not stale)
+        if hint:
+            for w in (self.app_icon, self.app_name, self.art, self.title):
+                w.setToolTip(hint)
 
     def _set_open_target(self, available: bool) -> None:
         """`open` is the card's primary tap target: header, art and title."""
@@ -635,7 +695,8 @@ class ActivityCard(QFrame):
             btn.setFixedSize(44, 44)
             accent = self.accent()
             btn.setStyleSheet(f"QToolButton {{ background: {accent}; border-radius: 22px; }}"
-                              f"QToolButton:hover {{ background: {QColor(accent).lighter(115).name()}; }}")
+                              f"QToolButton:hover {{ background: {QColor(accent).lighter(115).name()}; }}"
+                              f"QToolButton:disabled {{ background: {self.theme.mix(accent, 0.45)}; }}")
 
     def _make_input(self, action: dict, draft: str) -> QWidget:
         aid = action["id"]
@@ -648,12 +709,11 @@ class ActivityCard(QFrame):
         field.setClearButtonEnabled(True)
         send = QToolButton()
         send.setObjectName(f"action:{aid}")
-        send.setToolTip(action.get("label") or "Send")
+        send.setProperty("label", action.get("label") or "Send")
         send.setIcon(icons.icon("send", self.accent()))
         send.setIconSize(QSize(20, 20))
         send.setCursor(Qt.CursorShape.PointingHandCursor)
-        send.setEnabled(bool(draft.strip()))
-        field.textChanged.connect(lambda t: send.setEnabled(bool(t.strip())))
+        field.textChanged.connect(lambda _t: self._sync_enabled())
         submit = lambda: self.trigger(aid, field.text()) if field.text().strip() else None  # noqa: E731
         field.returnPressed.connect(submit)
         send.clicked.connect(submit)
@@ -664,28 +724,30 @@ class ActivityCard(QFrame):
         return box
 
     def trigger(self, action_id: str, value: Any = None) -> None:
-        btn = self._buttons.get(action_id)
-        if btn is not None:
-            btn.setEnabled(False)
-        field = self._inputs.get(action_id)
-        if field is not None:
-            field.setEnabled(False)
+        if self.stale:
+            return
+        self._pending.add(action_id)
+        self._sync_enabled()
         device, activity = self.device_id, self.activity_id
 
         def done(result: Any, error: dict | None) -> None:
             if not _alive(self):
                 return
             ok = error is None and isinstance(result, dict) and result.get("ok") is True
-            if btn is not None and _alive(btn):
-                btn.setEnabled(True if field is None else bool(field.text().strip()))
-            if field is not None and _alive(field):
-                field.setEnabled(True)
-                if ok:
-                    field.clear()
+            self._pending.discard(action_id)
+            field = self._inputs.get(action_id)
+            if ok and field is not None:
+                field.clear()
+            self._sync_enabled()
             if action_id == "media.seek" and not ok:
                 self._optimistic_media = None
                 self.tick(now_ms())
-            if not ok:
+            if is_reconnecting_error(error):
+                message = (error or {}).get("message")
+                self.show_error(f"Still reconnecting to {self.device_name()} - try again in a moment"
+                                if message == "reconnecting" else f"{self._action_label(action_id)}: {message}",
+                                gentle=True)
+            elif not ok:
                 reason = (error or {}).get("message") or (result or {}).get("error") or "failed"
                 self.show_error(f"{self._action_label(action_id)}: {reason}")
 
@@ -707,7 +769,10 @@ class ActivityCard(QFrame):
         self.trigger("media.seek", int(value))
         self.tick(now_ms())
 
-    def show_error(self, message: str) -> None:
+    def show_error(self, message: str, gentle: bool = False) -> None:
+        self.error.setProperty("role", "notice" if gentle else "error")
+        self.error.style().unpolish(self.error)
+        self.error.style().polish(self.error)
         self.error.setText(message)
         self.error.show()
         self._error_timer.start(ERROR_VISIBLE_MS)

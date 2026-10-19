@@ -26,7 +26,7 @@ def main() -> None:
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication
 
-    from mock_orbitd import PIXEL_7A, MockOrbitd
+    from mock_orbitd import PIXEL_7A, PIXEL_8, MockOrbitd
     from orbit.applet import theme as themes
     from orbit.applet.client import DaemonClient
     from orbit.applet.model import now_ms
@@ -48,9 +48,10 @@ def main() -> None:
         widget.grab().save(str(path))
         print(path)
 
-    for scenario in ("demo", "crowded", "idle", "empty", "down"):
+    for scenario in ("demo", "stale", "crowded", "idle", "empty", "down"):
         sock = str(Path(tempfile.mkdtemp(prefix="orb", dir="/tmp")) / "s.sock")
-        mock = MockOrbitd(sock, scenario="empty" if scenario == "down" else scenario, evolve=False)
+        mock = MockOrbitd(sock, scenario={"down": "empty", "stale": "demo"}.get(scenario, scenario), evolve=False)
+        mock.reconnect_hold_s = 0.2
         if scenario != "down":
             mock.start()
         for t in (themes.LIGHT, themes.DARK):
@@ -62,6 +63,20 @@ def main() -> None:
             panel = Panel(client, t, popup=False)
             panel.show()
             wait(1200)
+            if scenario == "stale":
+                # The link drops just as play/pause is clicked: stale cards plus the gentle notice.
+                media = next(c for c in panel.activities_page.cards.values() if c.activity["kind"] == "media")
+                mock.drop_device(PIXEL_8)
+                media.trigger("media.pause")
+                wait(800)
+                save(panel, f"stale-{mode}")
+                panel.show_devices()
+                wait(200)
+                save(panel, f"stale-devices-{mode}")
+                mock.restore_device(PIXEL_8)
+                panel.close()
+                client.stop()
+                continue
             save(panel, f"{scenario}-{mode}")
             if scenario == "demo":
                 media = next(c for c in panel.activities_page.cards.values() if c.activity["kind"] == "media")

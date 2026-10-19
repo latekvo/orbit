@@ -12,6 +12,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import icons
 from .client import DaemonClient
+from .model import device_state, devices_summary
 from .pairing import PairingManager
 from .panel import Panel, compute_panel_position
 from .theme import Theme
@@ -91,8 +92,7 @@ class TrayController(QObject):
         if not self.client.connected:
             self.tray.setToolTip("Orbit - orbitd not running")
             return
-        live = [d.get("name") or "Phone" for d in self.client.devices if d.get("paired") and d.get("connected")]
-        self.tray.setToolTip("Orbit - " + (", ".join(live) if live else "no phone connected"))
+        self.tray.setToolTip("Orbit - " + devices_summary(self.client.devices))
 
     def toggle_panel(self) -> None:
         if self.panel.isVisible():
@@ -134,7 +134,7 @@ class TrayController(QObject):
         devices = m.addMenu("Devices")
         paired = [d for d in c.devices if d.get("paired")]
         for d in paired:
-            state = "connected" if d.get("connected") else "offline"
+            state = device_state(d).replace("reconnecting", "reconnecting...")
             act = devices.addAction(f"{d.get('name') or d.get('id')} - {state}")
             act.triggered.connect(lambda *_: self.show_panel(devices=True))
         if not paired:
