@@ -491,3 +491,43 @@ async def test_default_port_falls_back_when_taken(make_phone, monkeypatch):
         await Laptop().connect(phone)
     finally:
         holder.close()
+
+
+async def test_removed_scripted_activity_stays_removed(make_phone):
+    phone = await make_phone()  # tick 0.05: the download would republish on every tick
+    assert "progress:download" in phone.activities
+    assert phone.remove("progress:download") is True
+    await asyncio.sleep(0.5)
+    assert "progress:download" not in phone.activities
+
+
+async def test_frozen_phone_does_not_time_out_pending_pairing(make_phone):
+    phone = await make_phone(auto_accept=None, pairing_timeout=0.2)
+    laptop = await Laptop().connect(phone)
+    await laptop.send({"t": "pair_request"})
+    await phone.wait_event("pairing")
+    phone.freeze()
+    await asyncio.sleep(0.5)
+    assert len(phone.sessions) == 1 and not phone.sessions[0].closed
+    assert not [k for k, _ in phone.history if k == "pair_rejected"]
+
+
+async def test_art_mime_follows_image_type(make_phone):
+    phone = await make_phone()
+    jpeg = b"\xff\xd8\xff\xe0" + b"\x00" * 16
+    key = phone.add_art(jpeg)
+    with pytest.raises(ValueError):
+        phone.add_art(b"not an image")
+    laptop = Laptop()
+    await pair(phone, laptop)
+    phone.upsert({"id": "j", "kind": "generic", "title": "J", "artKey": key})
+    art, _ = await laptop.recv_until(lambda m: m["t"] == "art" and m["key"] == key)
+    assert art["mime"] == "image/jpeg" and base64.b64decode(art["data"]) == jpeg
+
+
+def test_advertised_addresses_for_ipv6_hosts():
+    from orbit.fakephone.mdns import advertised_addresses
+
+    assert advertised_addresses("::1") == ["::1"]
+    assert advertised_addresses("127.0.0.1") == ["127.0.0.1"]
+    assert all(":" in a for a in advertised_addresses("::"))
