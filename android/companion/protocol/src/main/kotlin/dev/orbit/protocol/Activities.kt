@@ -127,13 +127,6 @@ class ActivityPublisher(
         }
     }
 
-    /** Ids submitted (and not removed) including those still pending. */
-    fun knownIds(): Set<String> = synchronized(lock) {
-        val ids = hub.all().mapNotNull { it.str("id") }.toMutableSet()
-        pending.forEach { (id, p) -> if (p is Pending.Remove) ids.remove(id) else ids.add(id) }
-        ids
-    }
-
     private fun schedule(at: Long) {
         if (flushTask != null && flushAt <= at) return
         flushTask?.cancel(false)

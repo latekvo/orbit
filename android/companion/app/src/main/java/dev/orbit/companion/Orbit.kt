@@ -59,6 +59,9 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     @Volatile var actionExecutor: ActionExecutor? = null
 
+    /** Whether Orbit's own UI is in the foreground (which allows starting other apps' activities). */
+    @Volatile var uiVisible = false
+
     private val _sessions = MutableStateFlow<List<SessionView>>(emptyList())
     val sessionViews: StateFlow<List<SessionView>> = _sessions
     private val _activities = MutableStateFlow<List<JsonObject>>(emptyList())

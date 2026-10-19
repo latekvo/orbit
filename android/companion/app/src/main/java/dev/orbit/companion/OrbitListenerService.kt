@@ -1,6 +1,5 @@
 package dev.orbit.companion
 
-import android.app.ActivityOptions
 import android.app.Notification
 import android.app.PendingIntent
 import android.app.RemoteInput
@@ -16,6 +15,7 @@ import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import android.provider.Settings
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
@@ -405,7 +405,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
                 val ca = c.playbackState?.customActions?.firstOrNull { it.action == name } ?: return "custom action gone"
                 tc.sendCustomAction(ca, ca.extras)
             }
-            actionId == "open" -> return sendIntent(c.sessionActivity ?: return "no session activity")
+            actionId == "open" -> return openActivity(c.sessionActivity ?: return "no session activity")
             else -> return "unsupported action"
         }
         return null
@@ -415,7 +415,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         val sbn = notifs[id] ?: return "notification gone"
         val n = sbn.notification
         return when {
-            actionId == "open" -> sendIntent(n.contentIntent ?: return "no content intent")
+            actionId == "open" -> openActivity(n.contentIntent ?: return "no content intent")
             actionId == "dismiss" -> { cancelNotification(sbn.key); null }
             actionId.startsWith("notif.") -> {
                 val a = n.actions?.getOrNull(actionId.removePrefix("notif.").toIntOrNull() ?: -1) ?: return "action gone"
@@ -433,15 +433,31 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         }
     }
 
-    private fun sendIntent(pi: PendingIntent, fill: Intent? = null): String? = try {
-        val options = if (Build.VERSION.SDK_INT >= 34) {
-            ActivityOptions.makeBasic()
-                .setPendingIntentBackgroundActivityStartMode(ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
-                .toBundle()
+    /**
+     * Background apps may not start activities, and a PendingIntent sent from one is blocked without
+     * any error. With "Display over other apps" Orbit may start its own activity, which then sends the
+     * intent from the foreground; without it the block is reported to the desktop.
+     */
+    private fun openActivity(pi: PendingIntent): String? {
+        val isActivity = Build.VERSION.SDK_INT < 31 || pi.isActivity
+        if (isActivity && !orbit.uiVisible && Settings.canDrawOverlays(this)) {
+            startActivity(
+                Intent(this, OpenTrampolineActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_NO_ANIMATION)
+                    .putExtra(OpenTrampolineActivity.EXTRA_INTENT, pi),
+            )
+            return null
+        }
+        sendIntent(pi)?.let { return it }
+        return if (isActivity && !orbit.uiVisible) {
+            "background_start_blocked: allow \"Display over other apps\" for Orbit to open apps"
         } else {
             null
         }
-        pi.send(this, 0, fill, null, null, null, options)
+    }
+
+    private fun sendIntent(pi: PendingIntent, fill: Intent? = null): String? = try {
+        pi.send(this, 0, fill, null, null, null, allowBackgroundStart())
         null
     } catch (e: PendingIntent.CanceledException) {
         "intent cancelled"
@@ -480,3 +496,12 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
 @Suppress("DEPRECATION")
 private inline fun <reified T : android.os.Parcelable> Bundle.parcelable(key: String): T? =
     if (Build.VERSION.SDK_INT >= 33) getParcelable(key, T::class.java) else getParcelable(key) as? T
+
+/** Lets the PendingIntent's target use the sender's (our) background-start privileges (API 34+). */
+fun allowBackgroundStart(): Bundle? = if (Build.VERSION.SDK_INT >= 34) {
+    android.app.ActivityOptions.makeBasic()
+        .setPendingIntentBackgroundActivityStartMode(android.app.ActivityOptions.MODE_BACKGROUND_ACTIVITY_START_ALLOWED)
+        .toBundle()
+} else {
+    null
+}

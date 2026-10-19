@@ -4,6 +4,7 @@ import android.Manifest
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.provider.Settings
@@ -65,6 +66,16 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onResume() {
+        super.onResume()
+        Orbit.get(this).uiVisible = true
+    }
+
+    override fun onPause() {
+        Orbit.get(this).uiVisible = false
+        super.onPause()
+    }
+
     private fun missingPermissions(): List<String> {
         val wanted = buildList {
             if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.POST_NOTIFICATIONS)
@@ -98,6 +109,7 @@ class MainActivity : ComponentActivity() {
         }
         val granted = remember(resumeTick, connected) { listenerGranted() }
         val missing = remember(resumeTick) { missingPermissions() }
+        val overlay = remember(resumeTick) { Settings.canDrawOverlays(this) }
 
         var forgetting by remember { mutableStateOf<PinnedPeer?>(null) }
         forgetting?.let { p ->
@@ -153,6 +165,12 @@ class MainActivity : ComponentActivity() {
                                     Text("Grant access")
                                 }
                             }
+                        }
+                        Text("Open apps from computer: " + if (overlay) "allowed" else "not allowed")
+                        if (!overlay) {
+                            OutlinedButton(onClick = {
+                                startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+                            }) { Text("Allow opening apps") }
                         }
                         if (missing.isNotEmpty()) {
                             Button(onClick = { permissionLauncher.launch(missing.toTypedArray()) }) { Text("Allow notifications & Bluetooth") }
