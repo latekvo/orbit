@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 
 ART_MAX_ENTRIES = 64
 ART_MAX_BYTES = 8 * 1024 * 1024
+ART_FIELDS = ("artKey", "iconKey")
 BLE_STALE_AFTER = 30.0
 RECONNECT_MAX_DELAY = 60.0
 STABLE_SESSION = 30.0
@@ -299,7 +300,14 @@ class Daemon:
         ]
 
     def activities_json(self) -> list[dict[str, Any]]:
-        return [{**a, "stale": d.stale} for d in self.devices.values() for a in d.activities.values()]
+        return [self._activity_json(d, a) for d in self.devices.values() for a in d.activities.values()]
+
+    @staticmethod
+    def _activity_json(dev: Device, activity: dict[str, Any]) -> dict[str, Any]:
+        """``activity`` as listed: art keys only once the art is here, since it may follow the activity."""
+        a = {k: v for k, v in activity.items() if k not in ART_FIELDS or v in dev.art}
+        a["stale"] = dev.stale
+        return a
 
     # ---- device bookkeeping ----------------------------------------------------------------
 
@@ -711,13 +719,16 @@ class Daemon:
         if hashlib.sha256(raw).hexdigest()[:16] != key:
             log.warning("art key %s from %s does not match its data", key, dev.id)
             return
+        late = key not in dev.art and any(a.get(f) == key for a in dev.activities.values() for f in ART_FIELDS)
         dev.art[key] = (mime, raw)
         dev.art.move_to_end(key)
         self._evict_art(dev)
+        if late:
+            self.changed("activities")
 
     def _evict_art(self, dev: Device) -> None:
         """LRU-evict art over the limits, never art referenced by a current activity (it is not resent)."""
-        referenced = {a.get(k) for a in dev.activities.values() for k in ("artKey", "iconKey")}
+        referenced = {a.get(k) for a in dev.activities.values() for k in ART_FIELDS}
         for key in [k for k in dev.art if k not in referenced]:
             if len(dev.art) <= ART_MAX_ENTRIES and sum(len(v[1]) for v in dev.art.values()) <= ART_MAX_BYTES:
                 break

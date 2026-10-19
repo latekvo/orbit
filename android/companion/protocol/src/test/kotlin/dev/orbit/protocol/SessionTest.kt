@@ -138,13 +138,14 @@ class SessionTest {
         assertTrue("not pinned before both decisions", host.pins.isEmpty())
         c.send("""{"t":"pair_decision","accepted":true}""")
 
+        // Art follows the snapshot that references it.
+        val snapshot = c.recvType("snapshot")
+        assertEquals(listOf("x"), (snapshot["activities"] as JsonArray).map { (it as JsonObject).str("id") })
         val art = c.recv()
         assertEquals("art", art.type)
         assertEquals(icon.key, art.str("key"))
         assertEquals("image/png", art.str("mime"))
         assertEquals(b64e(byteArrayOf(1, 2, 3)), art.str("data"))
-        val snapshot = c.recvType("snapshot")
-        assertEquals(listOf("x"), (snapshot["activities"] as JsonArray).map { (it as JsonObject).str("id") })
         assertEquals(laptop.public.toList(), host.pins.getValue(deviceId(laptop.public)).static.toList())
         assertEquals(ResponderSession.State.PAIRED, session.state)
 
@@ -153,10 +154,10 @@ class SessionTest {
         val up = c.recv()
         assertEquals("upsert", up.type)
         assertEquals("y", (up["activity"] as JsonObject).str("id"))
-        // New art key: art precedes the upsert.
+        // New art key: the art follows the upsert.
         hub.upsert(activity("y", "Second", iconKey = icon.key, artKey = cover.key), listOf(cover))
-        assertEquals(cover.key, c.recv().also { assertEquals("art", it.type) }.str("key"))
         assertEquals(cover.key, (c.recvType("upsert")["activity"] as JsonObject).str("artKey"))
+        assertEquals(cover.key, c.recv().also { assertEquals("art", it.type) }.str("key"))
         hub.remove("x")
         assertEquals(json("""{"t":"remove","id":"x"}"""), c.recvType("remove"))
     }

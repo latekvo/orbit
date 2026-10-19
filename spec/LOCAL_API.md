@@ -91,6 +91,9 @@ this computer, so a toggle is never applied twice. Errors:
 // "stale": true from the moment the session dropped (the device is "reconnecting") until the
 // reconnected phone's snapshot replaces them; if the device does not come back within the
 // grace period they are removed.
+// "iconKey" / "artKey" are listed only once orbitd holds that art (it may follow the activity,
+// PROTOCOL.md 5.3), so art.get on a listed key succeeds; activities.changed fires again when
+// late art arrives.
 {"device": "<deviceId>", "id": "...", "kind": "media", ..., "stale": false}
 ```
 
