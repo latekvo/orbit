@@ -62,6 +62,7 @@ class StubError(Exception):
 class Stub:
     def __init__(self) -> None:
         self.calls: list[dict] = []
+        self.art_requests: list[str] = []
         self.subscribers: set[asyncio.StreamWriter] = set()
         self.server: asyncio.AbstractServer | None = None
         self.art = {art_key(a): a for a in ART}
@@ -182,6 +183,7 @@ class Stub:
         if method == "activities.action":
             return self.action(params)
         if method == "art.get":
+            self.art_requests.append(params.get("key"))
             data = self.art.get(params.get("key"))
             if params.get("device") != DEVICE_ID or data is None:
                 raise StubError("not_found", "unknown art")

@@ -310,12 +310,15 @@ class Bridge:
 
     async def run(self, path: Path | str) -> None:
         delay = RECONNECT_MIN_S
+        waiting = False
         while True:
             try:
                 client = await LocalClient.connect(path)
             except OSError as e:
-                log.debug("orbitd not reachable at %s: %s", path, e)
+                (log.debug if waiting else log.info)("waiting for orbitd at %s (%s)", path, e)
+                waiting = True
             else:
+                waiting = False
                 self._client = client
                 try:
                     await client.call("subscribe")
@@ -595,6 +598,9 @@ def dbus_player_factory() -> PlayerFactory:
         @dbus_property(access=READ)
         def CanControl(self) -> DBusBool:
             return True
+
+    # As in the MPRIS spec XML: clients must poll Position (and follow Seeked) instead of caching it.
+    PlayerIface.Position.introspection.annotations["org.freedesktop.DBus.Property.EmitsChangedSignal"] = "false"
 
     class DBusPlayer:
         def __init__(self, view: MediaView, perform: Perform, bus: MessageBus) -> None:

@@ -153,6 +153,8 @@ def test_player_props():
     p = view(media={"rate": 1.5, "seekable": False}).player_props()
     assert p["Rate"] == 1.5 and p["MinimumRate"] == 1.0 and p["MaximumRate"] == 1.5
     assert p["CanSeek"] is False
+    slow = view(media={"rate": 0.5}).player_props()
+    assert (slow["Rate"], slow["MinimumRate"], slow["MaximumRate"]) == (0.5, 0.5, 1.0)
     assert p["CanControl"] is True and p["Volume"] == 1.0
     assert "Position" not in p
 
@@ -365,6 +367,35 @@ async def test_bridge_drops_players_while_daemon_is_away_and_reconnects():
             await stub2.close()
 
 
+async def test_bridge_filters_activities(tmp_path):
+    made = []
+
+    async def factory(view, perform):
+        made.append(FakePlayer(view, perform))
+        return made[-1]
+
+    bridge = Bridge(factory, ArtCache(tmp_path))
+    timer = {"device": DEV, "id": "timer:x", "kind": "timer"}
+    await bridge.handle("activities.changed", {"activities": [act(), timer, {"kind": "media"}, "junk"]})
+    assert list(bridge.players) == [(DEV, MEDIA)]
+    assert made[0].view.identity == "Spotify"
+    await bridge.handle("devices.changed", {"devices": [{"id": DEV, "name": "Pixel 8", "connected": True}]})
+    assert made[0].view.identity == "Spotify (Pixel 8)"
+    await bridge.handle("devices.changed", {"devices": [{"id": DEV, "name": "Pixel 8", "connected": False}]})
+    assert not bridge.players and made[0].closed
+
+
+async def test_bridge_does_not_refetch_missing_art_right_away():
+    async with stub_bridge() as (stub, bridge, made, _):
+        await wait_for(lambda: bridge.players)
+        stub.handle("stub.patch", {"id": MEDIA, "set": {"artKey": "ffff", "title": "A"}})
+        await wait_for(lambda: "ffff" in stub.art_requests)
+        stub.handle("stub.patch", {"id": MEDIA, "set": {"title": "B"}})
+        await wait_for(lambda: made[0].view.act["title"] == "B")
+        assert stub.art_requests.count("ffff") == 1
+        assert made[0].view.art_path is None
+
+
 async def test_bridge_replaces_dead_player():
     async with stub_bridge() as (stub, bridge, made, _):
         await wait_for(lambda: bridge.players)
@@ -416,6 +447,18 @@ async def test_dbus_player_properties_methods_and_signals():
         assert md["mpris:length"].value == 215_000_000
         assert md["mpris:trackid"].value == v.track_id
         assert await iface.get_can_go_next() is True
+        with pytest.raises(DBusError) as err:
+            await iface.set_rate(2.0)
+        assert err.value.type == "org.freedesktop.DBus.Error.NotSupported"
+        node = await client.introspect(name, mpris.MPRIS_PATH)
+        position = next(
+            p
+            for i in node.interfaces
+            if i.name == "org.mpris.MediaPlayer2.Player"
+            for p in i.properties
+            if p.name == "Position"
+        )
+        assert position.annotations == {"org.freedesktop.DBus.Property.EmitsChangedSignal": "false"}
 
         await iface.call_play_pause()
         await iface.call_next()
@@ -449,6 +492,13 @@ async def test_dbus_player_properties_methods_and_signals():
         assert changed["PlaybackStatus"].value == "Paused"
         assert set(changed) == {"PlaybackStatus", "CanGoNext", "CanGoPrevious"}
         assert seeks == [10_000_000]
+
+        changes.clear()
+        player.update(MediaView(act("paused", ["media.play"], media={"positionMs": 10000}), "Pixel 9"))
+        await wait_for(lambda: changes)
+        assert [(i, {k: v.value for k, v in c.items()}) for i, c in changes] == [
+            ("org.mpris.MediaPlayer2", {"Identity": "Spotify (Pixel 9)"})
+        ]
 
         with pytest.raises(RuntimeError, match="already owned"):
             await create(v, perform)
