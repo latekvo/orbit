@@ -5,10 +5,19 @@ description = "Desktop side of Orbit: mirror and control your phone's live activ
 requires-python = ">=3.11"
 dependencies = [
     "cryptography>=42",
+    "zeroconf>=0.132",
+    "bleak>=0.22",
+    "dbus-fast>=2.21; sys_platform == 'linux'",
 ]
 
+[project.scripts]
+orbitd = "orbit.daemon.main:main"
+orbit = "orbit.cli:main"
+orbit-fakephone = "orbit.fakephone.main:main"
+orbit-mpris = "orbit.mpris:main"
+
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
 
 [build-system]
 requires = ["hatchling"]
@@ -20,3 +29,12 @@ packages = ["src/orbit"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+
+[tool.ruff]
+extend-exclude = ["tools"]
+line-length = 120
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "ASYNC"]
+ignore = ["B017"]
