@@ -19,7 +19,13 @@ import android.os.SystemClock
 import android.service.notification.NotificationListenerService
 import android.service.notification.StatusBarNotification
 import android.util.Log
+import android.view.View
+import android.view.ViewGroup
+import android.widget.Chronometer
+import android.widget.FrameLayout
+import android.widget.TextView
 import dev.orbit.protocol.Art
+import dev.orbit.protocol.Icons
 import dev.orbit.protocol.POSITION_AT
 import dev.orbit.protocol.sha256
 import dev.orbit.protocol.str
@@ -123,7 +129,10 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     private fun onPosted(sbn: StatusBarNotification) {
         allNotifs[sbn.key] = sbn
         val id = notifId(sbn)
-        val activity = if (isLive(sbn) && !isExposedMedia(sbn)) map(sbn, id) else null
+        val custom = readCustomView(sbn)
+        // A custom-view clock stays an activity while paused (its view then has no running Chronometer).
+        val live = isLive(sbn, custom) || (custom != null && id in notifs)
+        val activity = if (live && !isExposedMedia(sbn)) map(sbn, id, custom) else null
         if (activity == null) {
             if (notifs.remove(id) != null) orbit.publisher.remove(id)
             return
@@ -137,7 +146,42 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         return controllers.values.any { it.sessionToken == token }
     }
 
-    private fun isLive(sbn: StatusBarNotification): Boolean {
+    /** What a custom content view shows; only read for notifications that have actions. */
+    private class CustomView(val texts: List<String>, val chronoBaseMs: Long?, val countDown: Boolean)
+
+    /**
+     * Inflates the app's own RemoteViews to find a running clock and its texts: apps like the stock
+     * Clock post stopwatches as plain, non-ongoing custom-view notifications without a category or
+     * any title/text extras.
+     */
+    private fun readCustomView(sbn: StatusBarNotification): CustomView? {
+        val n = sbn.notification
+        if (n.actions.isNullOrEmpty() || !n.extras.getBoolean(EXTRA_CONTAINS_CUSTOM_VIEW)) return null
+        @Suppress("DEPRECATION")
+        val rv = n.contentView ?: n.bigContentView ?: return null
+        val root = try {
+            rv.apply(this, FrameLayout(this))
+        } catch (e: Exception) {
+            Log.w(TAG, "could not inflate custom view of ${sbn.packageName}", e)
+            return null
+        }
+        val texts = mutableListOf<String>()
+        var chrono: Chronometer? = null
+        fun walk(v: View) {
+            if (v.visibility != View.VISIBLE) return
+            when (v) {
+                is Chronometer -> if (chrono == null) chrono = v
+                is TextView -> v.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }?.let(texts::add)
+                is ViewGroup -> for (i in 0 until v.childCount) walk(v.getChildAt(i))
+            }
+        }
+        walk(root)
+        val c = chrono
+        val base = c?.let { System.currentTimeMillis() - (SystemClock.elapsedRealtime() - it.base) }
+        return CustomView(texts, base, c?.isCountDown == true)
+    }
+
+    private fun isLive(sbn: StatusBarNotification, custom: CustomView?): Boolean {
         val pkg = sbn.packageName
         if (pkg == packageName || pkg in EXCLUDED_PACKAGES) return false
         val n = sbn.notification
@@ -148,13 +192,14 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
             hasProgress(extras) ||
             extras.getBoolean(Notification.EXTRA_SHOW_CHRONOMETER) ||
             (Build.VERSION.SDK_INT >= 36 && n.flags and FLAG_PROMOTED_ONGOING != 0) ||
-            ((n.flags and (Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE)) != 0 && hasActions)
+            ((n.flags and (Notification.FLAG_ONGOING_EVENT or Notification.FLAG_FOREGROUND_SERVICE)) != 0 && hasActions) ||
+            custom?.chronoBaseMs != null
     }
 
     private fun hasProgress(extras: Bundle) =
         extras.getInt(Notification.EXTRA_PROGRESS_MAX) > 0 || extras.getBoolean(Notification.EXTRA_PROGRESS_INDETERMINATE)
 
-    private fun map(sbn: StatusBarNotification, id: String): Pair<JsonObject, List<Art>> {
+    private fun map(sbn: StatusBarNotification, id: String, custom: CustomView?): Pair<JsonObject, List<Art>> {
         val n = sbn.notification
         val e = n.extras
         val newArts = mutableListOf<Art>()
@@ -167,18 +212,23 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
             n.category == Notification.CATEGORY_CALL -> "call"
             n.category == Notification.CATEGORY_NAVIGATION -> "navigation"
             n.category == Notification.CATEGORY_PROGRESS || hasProgress(e) -> "progress"
-            n.category == CATEGORY_STOPWATCH || n.category == Notification.CATEGORY_ALARM || chrono -> "timer"
+            n.category == CATEGORY_STOPWATCH || n.category == Notification.CATEGORY_ALARM || chrono ||
+                custom?.chronoBaseMs != null -> "timer"
             else -> "generic"
         }
         val title = (e.getCharSequence(Notification.EXTRA_TITLE) ?: e.getCharSequence(Notification.EXTRA_TITLE_BIG))?.toString()
+            ?: custom?.texts?.firstOrNull()
+        val customText = custom?.texts?.drop(1)?.joinToString(" · ")?.takeIf { it.isNotEmpty() }
+        // A custom-view clock is running iff the notification offers to pause it.
+        val customRunning = custom?.chronoBaseMs != null && n.actions.orEmpty().any { Icons.forLabel(it.title?.toString().orEmpty()) == "pause" }
         val activity = buildJsonObject {
             put("id", id)
             put("kind", kind)
             putJsonObject("app") { put("id", sbn.packageName); put("name", appName(sbn.packageName)) }
             put("title", title?.takeIf { it.isNotBlank() } ?: appName(sbn.packageName))
             e.getCharSequence(Notification.EXTRA_SUB_TEXT)?.toString()?.takeIf { it.isNotBlank() }?.let { put("subtitle", it) }
-            (e.getCharSequence(Notification.EXTRA_TEXT) ?: e.getCharSequence(Notification.EXTRA_BIG_TEXT))
-                ?.toString()?.takeIf { it.isNotBlank() }?.let { put("text", it) }
+            ((e.getCharSequence(Notification.EXTRA_TEXT) ?: e.getCharSequence(Notification.EXTRA_BIG_TEXT))?.toString() ?: customText)
+                ?.takeIf { it.isNotBlank() }?.let { put("text", it) }
             icon?.let { put("iconKey", it.key) }
             large?.let { put("artKey", it.key) }
             if (n.color != Notification.COLOR_DEFAULT) put("color", "#%06x".format(n.color and 0xffffff))
@@ -193,6 +243,12 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
                 putJsonObject("chrono") {
                     put("baseMs", n.`when`)
                     put("countDown", e.getBoolean(Notification.EXTRA_CHRONOMETER_COUNT_DOWN))
+                    put("running", true)
+                }
+            } else if (customRunning) {
+                putJsonObject("chrono") {
+                    put("baseMs", custom!!.chronoBaseMs)
+                    put("countDown", custom.countDown)
                     put("running", true)
                 }
             }
@@ -309,7 +365,8 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
                 if (has(PlaybackState.ACTION_SKIP_TO_NEXT)) add(action("media.next", "Next", "next"))
                 if (has(PlaybackState.ACTION_STOP)) add(action("media.stop", "Stop", "stop"))
                 state.customActions.forEach { ca ->
-                    add(action("media.custom.${ca.action}", ca.name?.toString() ?: ca.action))
+                    val label = ca.name?.toString() ?: ca.action
+                    add(action("media.custom.${ca.action}", label, Icons.forCustomAction(ca.action, label)))
                 }
                 if (c.sessionActivity != null) add(action("open", "Open"))
             })
@@ -397,7 +454,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         packageManager.getApplicationLabel(packageManager.getApplicationInfo(pkg, 0)).toString()
     }.getOrDefault(pkg)
 
-    private fun action(id: String, label: String, icon: String? = iconFor(label), extra: JsonObjectBuilder.() -> Unit = {}) =
+    private fun action(id: String, label: String, icon: String? = Icons.forLabel(label), extra: JsonObjectBuilder.() -> Unit = {}) =
         buildJsonObject {
             put("id", id)
             put("label", label)
@@ -410,24 +467,13 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         private const val FLAG_PROMOTED_ONGOING = 0x00040000
         /** Notification.CATEGORY_STOPWATCH, added in API 31. */
         private const val CATEGORY_STOPWATCH = "stopwatch"
+        /** Notification.EXTRA_CONTAINS_CUSTOM_VIEW (hidden constant). */
+        private const val EXTRA_CONTAINS_CUSTOM_VIEW = "android.contains.customView"
         private val EXCLUDED_PACKAGES = setOf("android", "com.android.systemui")
         private val LIVE_CATEGORIES = setOf(
             Notification.CATEGORY_TRANSPORT, Notification.CATEGORY_PROGRESS, Notification.CATEGORY_NAVIGATION,
             Notification.CATEGORY_CALL, CATEGORY_STOPWATCH, Notification.CATEGORY_ALARM,
         )
-        private val ICONS = listOf(
-            "pause" to "pause", "play" to "play", "resume" to "play", "next" to "next", "skip" to "next",
-            "previous" to "previous", "stop" to "stop", "reply" to "reply", "hang up" to "call_end",
-            "end call" to "call_end", "decline" to "call_end", "mute" to "mute", "unmute" to "unmute", "dismiss" to "close",
-            "cancel" to "close", "like" to "like", "dislike" to "dislike", "shuffle" to "shuffle", "repeat" to "repeat",
-            "add" to "add",
-        )
-
-        /** Well-known icon (spec 5.2) for a label, matched on its first word. */
-        fun iconFor(label: String): String? {
-            val l = label.trim().lowercase()
-            return ICONS.firstOrNull { (k, _) -> l == k || l.startsWith("$k ") }?.second
-        }
     }
 }
 
