@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 
 from ..paths import config_dir, socket_path
-from .api import AlreadyRunning
+from .api import StartupError
 from .core import Daemon
 
 
@@ -60,6 +60,6 @@ def main(argv: list[str] | None = None) -> None:
         logging.getLogger("bleak").setLevel(logging.WARNING)
     try:
         asyncio.run(run(args))
-    except AlreadyRunning as e:
+    except StartupError as e:
         print(f"orbitd: {e}", file=sys.stderr)
         sys.exit(1)
