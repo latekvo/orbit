@@ -4,6 +4,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
 import java.io.IOException
@@ -42,6 +43,8 @@ class SessionTimeouts(
     val unpairedMs: Long = 30_000,
     /** Outbound messages that may wait for a slow or non-reading peer before the session closes. */
     val maxQueuedSends: Int = 1024,
+    /** Images that may wait behind control traffic; beyond it the oldest is dropped, not the session. */
+    val maxQueuedArt: Int = 64,
 )
 
 /** Runs one responder-side session (spec 3-5) over [stream]. Call [run] on a dedicated thread. */
@@ -57,6 +60,8 @@ class ResponderSession(
     private val clock: () -> Long = System::currentTimeMillis,
     private val timeouts: SessionTimeouts = SessionTimeouts(),
     private val handshake: (FrameStream) -> SecureChannel = { Handshake.respond(it, identity, name, platform) },
+    /** Chooses per-transport art variants; null sends art as stored. */
+    private val artSizer: ArtSizer? = null,
 ) {
     enum class State { HANDSHAKE, UNPAIRED, PAIRING, PAIRED, CLOSED }
 
@@ -69,7 +74,10 @@ class ResponderSession(
     private val sendOverflow = AtomicBoolean()
     private var channel: SecureChannel? = null
     private var ticker: ScheduledFuture<*>? = null
-    private val sentArt = HashSet<String>() // sender thread only
+    // Sender thread only: art written, art waiting behind other messages, art keys per activity on the wire.
+    private val sentArt = HashSet<String>()
+    private val pendingArt = LinkedHashMap<String, Art>()
+    private val wireRefs = HashMap<String, List<String>>()
     private var nextPing = 0L
 
     @Volatile var state: State = State.HANDSHAKE
@@ -95,7 +103,11 @@ class ResponderSession(
 
     private val hubListener = object : ActivityHub.Listener {
         override fun onUpsert(activity: JsonObject) = enqueue { sendActivity(activity) }
-        override fun onRemove(id: String) = enqueue { send(buildJsonObject { put("t", "remove"); put("id", id) }) }
+        override fun onRemove(id: String) = enqueue {
+            send(buildJsonObject { put("t", "remove"); put("id", id) })
+            wireRefs.remove(id)
+            dropUnreferencedArt()
+        }
     }
 
     /** Blocks until the session ends. Never throws. */
@@ -225,15 +237,16 @@ class ResponderSession(
         host.sessionChanged(this)
         hub.subscribe(hubListener) { activities ->
             enqueue {
-                val wire = activities.map { a -> sendArtFor(a) }
-                // Stamp after the art went out: on BLE that can take seconds, and `now` anchors the
-                // receiver's clock offset and media positions.
+                val wire = activities.map { a -> queueArtFor(a) }
                 val now = clock()
                 send(buildJsonObject {
                     put("t", "snapshot")
                     put("now", now)
                     put("activities", JsonArray(wire.map { activityForWire(it, now) }))
                 })
+                wireRefs.clear()
+                wire.forEach { wireRefs[it.str("id")!!] = artRefs(it) }
+                dropUnreferencedArt()
             }
         }
         // markClosed sets CLOSED before unsubscribing: a close that raced the subscribe is caught here.
@@ -304,6 +317,7 @@ class ResponderSession(
             sender.execute {
                 try {
                     block()
+                    sendQueuedArt()
                 } catch (e: Exception) {
                     close("send failed: ${e.message}")
                 }
@@ -326,26 +340,54 @@ class ResponderSession(
     }
 
     private fun sendActivity(activity: JsonObject) {
-        val a = sendArtFor(activity)
+        val a = queueArtFor(activity)
         val now = clock()
         send(buildJsonObject { put("t", "upsert"); put("now", now); put("activity", activityForWire(a, now)) })
+        wireRefs[a.str("id")!!] = artRefs(a)
+        dropUnreferencedArt()
     }
 
-    /** Sends any not-yet-sent art [activity] references; drops references to art no longer available. */
-    private fun sendArtFor(activity: JsonObject): JsonObject {
+    /**
+     * Queues not-yet-sent art [activity] references and returns it pointing at the variants this
+     * transport gets; drops references to art no longer available.
+     */
+    private fun queueArtFor(activity: JsonObject): JsonObject {
         var a = activity
         for (field in ART_FIELDS) {
             val key = a.str(field) ?: continue
-            if (key in sentArt) continue
-            val art = hub.art(key)
+            val art = hub.art(key)?.let { artSizer?.forTransport(it, field, transport) ?: it }
             if (art == null) {
                 a = JsonObject(a - field)
                 continue
             }
+            if (art.key != key) a = JsonObject(a + (field to JsonPrimitive(art.key)))
+            if (art.key in sentArt || art.key in pendingArt) continue
+            pendingArt[art.key] = art
+            if (pendingArt.size > timeouts.maxQueuedArt) pendingArt.remove(pendingArt.keys.first())
+        }
+        return a
+    }
+
+    private fun artRefs(activity: JsonObject) = ART_FIELDS.mapNotNull { activity.str(it) }
+
+    /** Superseded art (its activity moved on or went away before it was sent) is never sent. */
+    private fun dropUnreferencedArt() {
+        if (pendingArt.isEmpty()) return
+        val live = wireRefs.values.flatten().toSet()
+        pendingArt.keys.retainAll(live)
+    }
+
+    /**
+     * Writes queued art while no other message waits, so art delays control traffic by at most
+     * the one frame already on the link.
+     */
+    private fun sendQueuedArt() {
+        while (sender.queue.isEmpty() && state != State.CLOSED) {
+            val key = pendingArt.keys.firstOrNull() ?: return
+            val art = pendingArt.remove(key)!!
             send(buildJsonObject { put("t", "art"); put("key", key); put("mime", art.mime); put("data", b64e(art.data)) })
             sentArt += key
         }
-        return a
     }
 
     // --- teardown ---

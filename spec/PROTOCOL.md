@@ -166,7 +166,7 @@ its own clock. Media positions are valid at the message's `now`.
 | `snapshot` | R->I | `now`, `activities: [Activity]` - full replacement of the activity set |
 | `upsert` | R->I | `now`, `activity: Activity` - add or replace by `id` |
 | `remove` | R->I | `id` |
-| `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64). Sent before the first activity that references `key` in this session. `key` = first 16 hex chars of SHA-256(data). Images are at most 256x256. |
+| `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64). Sent at most once per `key` per session, possibly after the activities that reference it (5.3). `key` = first 16 hex chars of SHA-256(data). Images are at most 256x256. |
 | `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below) |
 | `action_result` | R->I | `req`, `ok` (bool), `error` (optional string) |
 | `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive). A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
@@ -233,3 +233,14 @@ Well-known action ids:
 | `open` | open the activity on the phone | - |
 | `dismiss` | dismiss the activity (only offered if dismissable) | - |
 | `notif.<n>` | the n-th action of the source notification | text if the action has `input` |
+
+### 5.3 Art delivery
+
+Art is lower priority than every other message: a responder MAY send it after the `snapshot` or
+`upsert` that references its key, MAY send later messages ahead of it, and MAY omit it (for
+example when the referencing activity changed before the art went out). Initiators show a
+placeholder until the art arrives.
+
+Over BLE, responders SHOULD send smaller variants (Android: at most 128x128 for `artKey`, 64x64 for
+`iconKey`, a few KB each). Keys are content hashes, so a variant has its own key and never
+collides with the full-size image a LAN session sends.

@@ -3,6 +3,7 @@ package dev.orbit.companion
 import android.content.Context
 import dev.orbit.protocol.ActivityHub
 import dev.orbit.protocol.ActivityPublisher
+import dev.orbit.protocol.ArtSizer
 import dev.orbit.protocol.ByteStream
 import dev.orbit.protocol.KeyPair
 import dev.orbit.protocol.Peer
@@ -60,6 +61,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
     val hub = ActivityHub()
     val scheduler = ScheduledThreadPoolExecutor(2).apply { removeOnCancelPolicy = true }
     val publisher = ActivityPublisher(hub, scheduler)
+    private val artSizer = ArtSizer(BitmapArtTranscoder)
     private val sessionThreads = Executors.newCachedThreadPool(daemonThreads("orbit-session") { EventLog.log("session thread died: $it") })
     private val sessions = ConcurrentHashMap<Long, ResponderSession>()
     private val unauthenticated = UnauthenticatedSessions(MAX_UNAUTHENTICATED, MAX_UNAUTHENTICATED_PER_ADDRESS)
@@ -106,7 +108,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
      * [address] counts against the unpaired-session limits and is refused (stream closed) beyond them.
      */
     fun startSession(stream: ByteStream, transport: String, address: String? = null) {
-        val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler)
+        val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler, artSizer = artSizer)
         if (address != null && !unauthenticated.admit(session.id, address)) {
             EventLog.log("refusing $transport session from $address: too many unpaired sessions")
             runCatching { stream.close() }

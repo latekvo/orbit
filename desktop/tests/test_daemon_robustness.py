@@ -231,6 +231,42 @@ async def test_art_referenced_by_live_activity_is_never_evicted(make_daemon, sho
         assert list(daemon.devices[phone.id].art) == [keys[0], keys[3]]
 
 
+async def test_art_keys_are_listed_once_the_art_arrived(make_daemon, short_tmp, api_for):
+    icon, cover = b"icon", b"cover"
+    icon_key, cover_key = (hashlib.sha256(img).hexdigest()[:16] for img in (icon, cover))
+    send_cover = asyncio.Event()
+
+    async def script(ch):
+        await ready(ch)
+        await ch.send({"t": "art", "key": icon_key, "mime": "image/png", "data": base64.b64encode(icon).decode()})
+        activity = {"id": "a", "kind": "media", "iconKey": icon_key, "artKey": cover_key, "actions": []}
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [activity]})
+        await send_cover.wait()
+        await ch.send({"t": "art", "key": cover_key, "mime": "image/jpeg", "data": base64.b64encode(cover).decode()})
+        await asyncio.sleep(30)
+
+    async with RawPhone(script) as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        api = await api_for(daemon)
+        [listed] = await until(lambda: api.call("activities.list"))
+        assert listed["iconKey"] == icon_key and "artKey" not in listed
+        await api.call("subscribe")
+        events = api.events()
+
+        async def next_activities():
+            async for event, data in events:
+                if event == "activities.changed":
+                    return data["activities"]
+
+        assert "artKey" not in (await asyncio.wait_for(next_activities(), 2))[0]
+        send_cover.set()
+        [late] = await asyncio.wait_for(next_activities(), 2)
+        assert late["artKey"] == cover_key
+        art = await api.call("art.get", {"device": phone.id, "key": cover_key})
+        assert art == {"mime": "image/jpeg", "data": base64.b64encode(cover).decode()}
+
+
 async def test_crashed_connector_is_restarted(make_daemon, short_tmp, monkeypatch):
     monkeypatch.setattr(core, "CONNECTOR_RESTART_DELAY", 0.1)
     real_routes, calls = core.Daemon.routes, []
