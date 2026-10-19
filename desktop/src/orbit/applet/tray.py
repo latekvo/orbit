@@ -6,7 +6,7 @@ import logging
 import sys
 import time
 
-from PySide6.QtCore import QObject, QRect, QSize, Qt
+from PySide6.QtCore import QObject, QRect, QSize, QTimer
 from PySide6.QtGui import QAction, QCursor, QGuiApplication, QIcon
 from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
@@ -106,13 +106,18 @@ class TrayController(QObject):
         else:
             self.panel.show_activities()
         anchor = self.tray.geometry()
-        if not anchor.isValid() or anchor.isEmpty():
-            # Most StatusNotifierItem hosts don't report the icon geometry.
+        if anchor.isEmpty() or QGuiApplication.screenAt(anchor.center()) is None:
+            # Most StatusNotifierItem hosts report no geometry, and macOS reports an off-screen
+            # one until the status item has been laid out.
             anchor = QRect(QCursor.pos(), QSize(1, 1))
         screen = QGuiApplication.screenAt(anchor.center()) or QGuiApplication.primaryScreen()
         pos = compute_panel_position(anchor, self.panel.size(), screen.availableGeometry())
         log.info("showing panel at (%d, %d), anchor=%s", pos.x(), pos.y(), _rect(anchor))
         self.panel.show_at(pos)
+        QTimer.singleShot(300, lambda: log.info(
+            "panel visible=%s exposed=%s active=%s geometry=%s", self.panel.isVisible(),
+            bool(self.panel.windowHandle() and self.panel.windowHandle().isExposed()),
+            self.panel.isActiveWindow(), _rect(self.panel.geometry())))
 
     # -- menu ------------------------------------------------------------------------------
 

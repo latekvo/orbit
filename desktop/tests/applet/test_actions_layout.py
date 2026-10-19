@@ -244,7 +244,7 @@ def test_pressing_a_toggle_against_the_mock_restyles_it(qtbot, sock_path):
         for _ in range(3):
             prev = btn.property("toggleState")
             qtbot.mouseClick(btn, Qt.MouseButton.LeftButton)
-            qtbot.waitUntil(lambda: btn.property("toggleState") != prev and btn.isEnabled())
+            qtbot.waitUntil(lambda prev=prev: btn.property("toggleState") != prev and btn.isEnabled())
             states.append(btn.property("toggleState"))
             assert card.findChild(QToolButton, "action:media.custom.TOGGLE_REPEAT_MODE") is btn
             assert btn.geometry() == geo

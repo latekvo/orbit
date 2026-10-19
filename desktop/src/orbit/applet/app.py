@@ -96,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     client.start()
 
     if args.show_panel:
-        QTimer.singleShot(0, tray.show_panel)
+        QTimer.singleShot(500, tray.show_panel)  # once the tray icon has a real geometry
     if args.screenshot:
         _schedule_screenshot(app, client, tray, args.screenshot)
     if args.quit_after:

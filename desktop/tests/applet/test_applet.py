@@ -1,4 +1,3 @@
-import time
 
 import pytest
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
