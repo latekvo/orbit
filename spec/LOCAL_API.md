@@ -30,16 +30,23 @@ Newline-delimited JSON, one object per line, UTF-8.
 | `subscribe` | - | `true`; the connection then also receives events (below), starting with one of each |
 | `devices.list` | - | `[Device]` |
 | `devices.connect` | `{"id"}` or `{"host", "port"}` | `{"id": "<deviceId>"}` once the handshake completes (pairing may follow); always the real 32-hex id, also when `id` was provisional |
-| `devices.disconnect` | `{"id"}` | `true` |
+| `devices.disconnect` | `{"id"}` | `true`; also stops a `"reconnecting"` device from reconnecting |
 | `devices.forget` | `{"id"}` | `true` - unpairs (sends `unpair` if connected) and removes all stored data |
 | `pairing.list` | - | `[Pairing]` |
 | `pairing.respond` | `{"session", "accept": bool}` | `true` |
 | `activities.list` | - | `[DeviceActivity]` |
-| `activities.action` | `{"device", "activity", "action", "value"?}` | `{"ok": bool, "error"?: string}` (waits up to 10 s for `action_result`) |
+| `activities.action` | `{"device", "activity", "action", "value"?}` | `{"ok": bool, "error"?: string}` (waits up to 10 s for `action_result`; see below while `"reconnecting"`) |
 | `art.get` | `{"device", "key"}` | `{"mime", "data"}` (b64) |
 
 Error codes: `bad_request`, `not_found`, `not_connected`, `not_paired`, `timeout`,
 `failed`.
+
+`activities.action` on a `"reconnecting"` device waits up to 5 s for the session to come back
+and then sends the action. An action is re-sent on the new session only if it never left this
+computer, so a toggle is never applied twice. `not_connected` messages:
+- `"reconnecting"`: still not back after 5 s;
+- `"connection lost after the action was sent; it may have been applied"`: not retried;
+- anything else: the device is `"offline"`.
 
 ## Types
 
@@ -47,10 +54,15 @@ Error codes: `bad_request`, `not_found`, `not_connected`, `not_paired`, `timeout
 // Device
 {"id": "...", "name": "Pixel 8", "platform": "android",
  "paired": true, "connected": true,
+ "state": "connected" | "reconnecting" | "offline",
  "transport": "lan" | "ble" | null,
  "address": "192.168.1.20:47820" | null,
  "discovered": ["lan", "ble"],            // currently seen by discovery
  "provisional": false}
+
+// state: "reconnecting" for up to 15 s after a paired device's session dropped while orbitd
+// keeps trying to get it back ("connected" is false); its last activities stay listed with
+// "stale": true meanwhile. "offline" otherwise when not connected.
 
 // Provisional devices: an unpaired phone seen only via BLE advertises just the first 8 bytes
 // of its deviceId (PROTOCOL.md 1.2). It is listed with
@@ -71,7 +83,10 @@ Error codes: `bad_request`, `not_found`, `not_connected`, `not_paired`, `timeout
 // local clock (epoch ms):
 //   updatedMs, chrono.baseMs  -> local clock
 //   media.positionAtMs        -> local time at which media.positionMs was valid
-{"device": "<deviceId>", "id": "...", "kind": "media", ...}
+// "stale": true from the moment the session dropped (the device is "reconnecting") until the
+// reconnected phone's snapshot replaces them; if the device does not come back within the
+// grace period they are removed.
+{"device": "<deviceId>", "id": "...", "kind": "media", ..., "stale": false}
 ```
 
 ## Events

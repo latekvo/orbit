@@ -19,6 +19,19 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 UNPAIRED_ALLOWED = {"pair_request", "pair_decision", "ping", "pong", "bye", "error"}
+SENT_THEN_LOST = "connection lost after the action was sent; it may have been applied"
+
+
+class LinkDown(ConnectionError):
+    """The transport is gone. ``sent`` is False only if no byte of the failed frame can have reached the phone."""
+
+    def __init__(self, cause: str, sent: bool) -> None:
+        super().__init__(cause)
+        self.sent = sent
+
+
+class ActionNotSent(Exception):
+    """The session ended before the action left this computer, so it is safe to send it on the next session."""
 
 
 class Pairing:
@@ -50,7 +63,7 @@ class Session:
         self._pending: dict[int, asyncio.Future] = {}
         self._send_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
-        self._last_rx = self._last_tx = time.monotonic()
+        self.opened = self._last_rx = self._last_tx = time.monotonic()
 
     @property
     def paired(self) -> bool:
@@ -111,14 +124,21 @@ class Session:
         try:
             await self.send(msg)
             result = await asyncio.wait_for(fut, timeout)
+        except LinkDown as e:
+            if e.sent:
+                raise ApiError("not_connected", SENT_THEN_LOST) from None
+            self._pending.pop(req, None)
+            self.close_reason = self.close_reason or f"connection lost: {e}"
+            self._finish()
+            raise ActionNotSent(str(e)) from None
         except TimeoutError:
             raise ApiError("timeout", f"no action_result within {timeout:g} s") from None
         except ProtocolError as e:
             if e.code == "bad_frame":
                 raise ApiError("bad_request", "action message too large") from None
             raise ApiError("not_connected", str(e)) from None
-        except ConnectionError as e:
-            raise ApiError("not_connected", str(e)) from None
+        except ConnectionError:
+            raise ApiError("not_connected", SENT_THEN_LOST) from None
         finally:
             self._pending.pop(req, None)
         out: dict[str, Any] = {"ok": result.get("ok") is True}
@@ -139,7 +159,16 @@ class Session:
         if self.closed.is_set():
             return
         self.close_reason = self.close_reason or "closed"
-        log.info("session %s with %s (%s) closed: %s", self.id, self.peer.name, self.peer.id, self.close_reason)
+        log.info(
+            "session_closed session=%s device=%s name=%r transport=%s address=%s uptime=%.1fs cause=%r",
+            self.id,
+            self.peer.id,
+            self.peer.name,
+            self.transport,
+            self.address,
+            time.monotonic() - self.opened,
+            self.close_reason,
+        )
         with contextlib.suppress(Exception):
             self.channel.close()
         current = asyncio.current_task()
