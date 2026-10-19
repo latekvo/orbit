@@ -9,14 +9,20 @@ import android.graphics.Color
 import android.graphics.LinearGradient
 import android.graphics.Paint
 import android.graphics.Shader
+import android.media.AudioAttributes
+import android.media.AudioFormat
+import android.media.AudioTrack
 import android.media.MediaMetadata
 import android.media.session.MediaSession
 import android.media.session.PlaybackState
 import android.os.SystemClock
 
 /**
- * Silent fake music player: a real [MediaSession] whose PlaybackState is truthful (position
+ * Fake music player: a real [MediaSession] whose PlaybackState is truthful (position
  * extrapolates at speed 1 while playing) plus a MediaStyle notification owned by [MediaService].
+ * A looping silent AudioTrack plays exactly while the state is playing: the system routes media
+ * keys (`cmd media_session dispatch`, headset buttons) only to the session of the app that last
+ * produced audio.
  * `previous` always goes to the previous track (no restart-current-track rule) so tests are deterministic.
  */
 class MediaProducer(private val ctx: Context) : Producer {
@@ -38,6 +44,7 @@ class MediaProducer(private val ctx: Context) : Producer {
         private set
     var index = 0
         private set
+    private var silence: AudioTrack? = null
     private var state = PlaybackState.STATE_NONE
     private var basePos = 0L
     private var baseAt = 0L
@@ -83,6 +90,7 @@ class MediaProducer(private val ctx: Context) : Producer {
         s.setSessionActivity(Producers.openApp(ctx))
         s.isActive = true
         session = s
+        silence = silentTrack()
         active = true
         index = 0
         state = PlaybackState.STATE_PLAYING
@@ -100,6 +108,8 @@ class MediaProducer(private val ctx: Context) : Producer {
         session?.isActive = false
         session?.release()
         session = null
+        silence?.release()
+        silence = null
         active = false
         MediaService.instance?.dismiss()
         Producers.nm.cancel(notifId)
@@ -136,6 +146,7 @@ class MediaProducer(private val ctx: Context) : Producer {
 
     private fun publish(metadata: Boolean) {
         val s = session ?: return
+        silence?.let { if (playing) it.play() else it.pause() }
         if (metadata) {
             s.setMetadata(
                 MediaMetadata.Builder()
@@ -155,6 +166,7 @@ class MediaProducer(private val ctx: Context) : Producer {
 
     override fun buildNotification(): Notification {
         val b = Notification.Builder(ctx, Producers.CH_MEDIA)
+            .setGroup(Producers.group(name))
             .setSmallIcon(android.R.drawable.ic_media_play)
             .setContentTitle(track.title)
             .setContentText(track.artist)
@@ -189,6 +201,31 @@ class MediaProducer(private val ctx: Context) : Producer {
         }
         return "media{state=$st track=${index + 1}/${tracks.size} title=\"${track.title}\" artist=\"${track.artist}\" " +
             "pos=${position()} dur=${track.durationMs} (${Producers.fmt(position())}/${Producers.fmt(track.durationMs)})}"
+    }
+
+    private fun silentTrack(): AudioTrack {
+        val rate = 8000
+        val frames = rate // 1 s of 16-bit mono zeros, looped forever
+        val t = AudioTrack.Builder()
+            .setAudioAttributes(
+                AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_MEDIA)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+                    .build()
+            )
+            .setAudioFormat(
+                AudioFormat.Builder()
+                    .setEncoding(AudioFormat.ENCODING_PCM_16BIT)
+                    .setSampleRate(rate)
+                    .setChannelMask(AudioFormat.CHANNEL_OUT_MONO)
+                    .build()
+            )
+            .setTransferMode(AudioTrack.MODE_STATIC)
+            .setBufferSizeInBytes(frames * 2)
+            .build()
+        t.write(ShortArray(frames), 0, frames)
+        t.setLoopPoints(0, frames, -1)
+        return t
     }
 
     /** 256x256 album art: per-track gradient with concentric rings and the album initials. */

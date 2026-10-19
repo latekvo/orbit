@@ -69,6 +69,7 @@ class DownloadProducer(private val ctx: Context) : Producer {
 
     override fun buildNotification(): Notification {
         val b = Notification.Builder(ctx, Producers.CH_DOWNLOAD)
+            .setGroup(Producers.group(name))
             .setContentIntent(Producers.openApp(ctx))
             .setCategory(Notification.CATEGORY_PROGRESS)
             .setOnlyAlertOnce(true)
@@ -87,7 +88,7 @@ class DownloadProducer(private val ctx: Context) : Producer {
         return b.setSmallIcon(android.R.drawable.stat_sys_download)
             .setContentTitle("Downloading $FILE")
             .setContentText(
-                if (paused) "Paused - $percent%" else "$percent% - %.1f MB of 150 MB".format(mb)
+                if (paused) "Paused - $percent%" else "$percent% - " + "%.1f MB of 150 MB".format(mb)
             )
             .setProgress(100, percent, false)
             .setOngoing(true)

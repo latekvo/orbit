@@ -67,6 +67,12 @@ object Producers {
         handler.post(ticker)
     }
 
+    /**
+     * Each producer gets its own group so the system does not auto-bundle them under one
+     * "ranker_group" summary, which real apps (one producer per package) would never get.
+     */
+    fun group(producer: String) = "dev.orbit.sample.$producer"
+
     fun byName(name: String): Producer? = all.firstOrNull { it.name == name }
 
     /** Parses "media,download" or "all" into producer names. */

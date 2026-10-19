@@ -52,6 +52,7 @@ class ReplyProducer(private val ctx: Context) : Producer {
             .build()
         val last = replies.lastOrNull()
         return Notification.Builder(ctx, Producers.CH_REPLY)
+            .setGroup(Producers.group(name))
             .setSmallIcon(android.R.drawable.sym_action_chat)
             .setContentTitle("Ada (Orbit QA)")
             .setContentText(if (last == null) PROMPT else "You: $last")

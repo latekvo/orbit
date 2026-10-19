@@ -4,7 +4,7 @@ import android.app.Notification
 import android.content.Context
 import android.os.Build
 
-/** 5-minute countdown shown with a count-down chronometer whose `when` is the wall-clock end time. */
+/** Countdown (5 min, or `value` ms passed to `timer.start`) shown with a count-down chronometer whose `when` is the wall-clock end time. */
 class TimerProducer(private val ctx: Context) : Producer {
     override val name = "timer"
     override val notifId = 1003
@@ -27,7 +27,7 @@ class TimerProducer(private val ctx: Context) : Producer {
                 active = true
                 finished = false
                 running = true
-                endAt = System.currentTimeMillis() + DEFAULT_MS
+                endAt = System.currentTimeMillis() + (value?.takeIf { it > 0 } ?: DEFAULT_MS)
                 Producers.nm.notify(notifId, buildNotification())
                 Producers.activityChanged()
                 return "ok"
@@ -72,6 +72,7 @@ class TimerProducer(private val ctx: Context) : Producer {
 
     override fun buildNotification(): Notification {
         val b = Notification.Builder(ctx, Producers.CH_TIMER)
+            .setGroup(Producers.group(name))
             .setSmallIcon(android.R.drawable.ic_lock_idle_alarm)
             .setContentTitle("Tea timer")
             .setContentIntent(Producers.openApp(ctx))

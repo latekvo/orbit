@@ -1,5 +1,6 @@
 package dev.orbit.sample
 
+import android.app.Notification
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -51,6 +52,15 @@ class KeepAliveService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
+        if (Producers.all.none { it !== Producers.media && it.active }) {
+            // Every producer stopped before this start was delivered; startForeground is still mandatory.
+            startForeground(
+                PLACEHOLDER_ID,
+                Notification.Builder(this, Producers.CH_DOWNLOAD).setSmallIcon(android.R.drawable.stat_sys_download).build(),
+                ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC,
+            )
+            stopForeground(STOP_FOREGROUND_REMOVE)
+        }
         reanchor()
         return START_NOT_STICKY
     }
@@ -81,6 +91,7 @@ class KeepAliveService : Service() {
     companion object {
         var instance: KeepAliveService? = null
             private set
+        private const val PLACEHOLDER_ID = 1999
 
         fun ensure(ctx: Context) {
             instance?.reanchor() ?: ctx.startForegroundService(Intent(ctx, KeepAliveService::class.java))
