@@ -35,7 +35,7 @@ async def test_mdns_discovers_and_autoconnects_only_paired(make_daemon, short_tm
                 addresses=[socket.inet_aton("127.0.0.1")],
                 server=f"orbit-test-{phone.id[:8]}.local.",
             )
-            await azc.async_register_service(info)
+            await (await azc.async_register_service(info))
             infos.append(info)
         try:
             pin_in(short_tmp / "daemon", paired.identity, name="Paired Phone")  # no remembered address
@@ -51,7 +51,7 @@ async def test_mdns_discovers_and_autoconnects_only_paired(make_daemon, short_tm
             assert stranger._writers == []  # never connected to
         finally:
             for info in infos:
-                await azc.async_unregister_service(info)
+                await (await azc.async_unregister_service(info))
             await azc.async_close()
 
 
