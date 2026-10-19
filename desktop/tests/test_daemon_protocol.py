@@ -40,6 +40,8 @@ async def test_unpaired_application_message_gets_not_paired(make_daemon, api_for
         await ch.send({"t": "ready", "paired": False, "now": now_ms()})
         assert (await ch.recv())["paired"] is False
         assert (await ch.recv())["t"] == "pair_request"
+        await ch.send({"t": "ping", "req": 77})  # allowed before pairing
+        assert await ch.recv() == {"t": "pong", "req": 77}
         await ch.send({"t": "snapshot", "now": now_ms(), "activities": [{"id": "x", "kind": "generic", "title": "T"}]})
         replies.set_result(await ch.recv())
         await asyncio.sleep(10)
