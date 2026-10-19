@@ -211,13 +211,13 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "cryptography", specifier = ">=42" },
-    { name = "pyside6-essentials", marker = "extra == 'applet'", specifier = ">=6.6" },
+    { name = "pyside6-essentials", marker = "extra == 'applet'", specifier = ">=6.7" },
 ]
 provides-extras = ["applet"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyside6-essentials", specifier = ">=6.6" },
+    { name = "pyside6-essentials", specifier = ">=6.7" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
     { name = "pytest-qt", specifier = ">=4.4" },

@@ -7,6 +7,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QSize, Qt, Signal
 from PySide6.QtGui import QFont
 from PySide6.QtWidgets import QDialog, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
+from shiboken6 import isValid
 
 from . import icons
 from .client import DaemonClient
@@ -99,6 +100,8 @@ class PairingDialog(QDialog):
             self.state.show()
 
         def done(result: Any, error: dict | None) -> None:
+            if not isValid(self):  # the daemon resolved the pairing first; the manager closed us
+                return
             if error:
                 self._answered = False
                 self.accept_btn.setEnabled(True)

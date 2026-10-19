@@ -673,8 +673,10 @@ class MockOrbitd:
             ticker.cancel()
             await asyncio.gather(ticker, return_exceptions=True)
         server.close()
+        # abort(), not close(): close() keeps the fd open until buffered replies are flushed,
+        # which never happens if the client is not reading. A dying daemon drops it at once.
         for conn in list(self._conns):
-            conn.writer.close()
+            conn.writer.transport.abort()
         if self._tasks:
             _, pending = await asyncio.wait(list(self._tasks), timeout=2)
             for t in pending:

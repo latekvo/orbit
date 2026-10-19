@@ -91,6 +91,10 @@ class DaemonClient(QObject):
     def _on_error(self, err: QLocalSocket.LocalSocketError) -> None:
         if err != QLocalSocket.LocalSocketError.PeerClosedError:
             log.debug("socket error: %s (%s)", err, self._sock.errorString())
+        # Emitted before the socket leaves ConnectingState, so look again once it has settled.
+        QTimer.singleShot(0, self._check_unconnected)
+
+    def _check_unconnected(self) -> None:
         if self._sock.state() == QLocalSocket.LocalSocketState.UnconnectedState:
             self._on_disconnected()
 
