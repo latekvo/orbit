@@ -176,6 +176,23 @@ class JvmPhone(Proc):
         out, _ = await p.communicate()
         return out.decode().count('" #')
 
+    async def live_instances(self, *classes: str) -> dict[str, int]:
+        """Live instance counts from ``jcmd GC.class_histogram`` (forces a full GC)."""
+        p = await asyncio.create_subprocess_exec(
+            str(Path(JAVA).parent / "jcmd"),
+            str(self.pid),
+            "GC.class_histogram",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        out, _ = await p.communicate()
+        counts = {c: 0 for c in classes}
+        for line in out.decode().splitlines():
+            parts = line.split()
+            if len(parts) >= 4 and parts[3] in counts:
+                counts[parts[3]] = int(parts[1])
+        return counts
+
     async def stop(self) -> None:
         if self.proc and self.proc.returncode is None and self.proc.stdin:
             with contextlib.suppress(Exception):

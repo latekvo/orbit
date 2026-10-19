@@ -42,6 +42,8 @@ async def test_flapping_link_for_minutes(rig):
     await asyncio.sleep(2)
     base = summary(await phone.stats())
     base_fds, base_rss = await orbitd_fds(laptop.proc.pid), await rss_kb(laptop.proc.pid)
+    classes = ("dev.orbit.protocol.ResponderSession", "dev.orbit.protocol.SecureChannel", "java.net.Socket")
+    base_live = await phone.live_instances(*classes)
     rng = random.Random(1)
     end = time.monotonic() + minutes * 60
     outcomes = collections.Counter()
@@ -78,6 +80,8 @@ async def test_flapping_link_for_minutes(rig):
     await asyncio.sleep(35)  # let every timer (idle, handshake, flush) run out
     after = summary(await phone.stats())
     fds, rss = await orbitd_fds(laptop.proc.pid), await rss_kb(laptop.proc.pid)
+    live = await phone.live_instances(*classes)
+    log(f"jcmd live instances {base_live} -> {live}; jcmd threads {await phone.jcmd_threads()}")
     values = collections.Counter(e["value"] for _, e in phone.events("action"))
     dups = {v: n for v, n in values.items() if n > 1}
     log(f"flap {minutes} min: {i} cycles, faults {dict(faults)}")
@@ -91,6 +95,7 @@ async def test_flapping_link_for_minutes(rig):
     assert not dups, f"actions executed more than once: {dups}"
     assert after["send_threads"] <= 1 and after["sessions"] == 1 and after["unauthenticated"] == 0
     assert after["fds"] <= base["fds"] + 2
+    assert live["dev.orbit.protocol.ResponderSession"] <= base_live["dev.orbit.protocol.ResponderSession"]
     assert after["schedulerQueue"] <= base["schedulerQueue"] + 2
     assert fds <= base_fds + 3
 
@@ -157,3 +162,53 @@ async def test_reconnect_storm_no_leaks(rig):
     assert after["sessions"] == 1 and after["unauthenticated"] == 0
     assert after["send_threads"] <= 1
     assert after["fds"] <= base["fds"] + 2
+
+
+async def test_paired_session_churn_no_leaks(rig):
+    """600 paired sessions from one pinned laptop key, each doing an action and then dying by RST,
+    FIN, bye, or being abandoned mid-stream; the JVM must return to baseline with no duplicate actions."""
+    phone, proxy, _ = await rig(phone_opts={"auto_accept": True}, laptop=False)
+    await phone.cmd("upsert", activity=MEDIA)
+    key = KeyPair.generate()
+    rng = random.Random(7)
+    classes = ("dev.orbit.protocol.ResponderSession", "dev.orbit.protocol.SecureChannel", "java.net.Socket")
+
+    async def session(i, pair=False):
+        reader, writer = await asyncio.open_connection("127.0.0.1", proxy.port)
+        ch = await asyncio.wait_for(initiate(FrameStream(reader, writer), key, "Churn", "linux"), 5)
+        await ch.send({"t": "ready", "paired": not pair, "now": 0})
+        if pair:
+            await ch.send({"t": "pair_request"})
+            await ch.send({"t": "pair_decision", "accepted": True})
+        while (await asyncio.wait_for(ch.recv(), 5))["t"] != "snapshot":
+            pass
+        await ch.send({"t": "action", "req": 1, "activity": MEDIA["id"], "action": "media.seek", "value": i})
+        how = rng.choice(["rst", "fin", "bye", "midframe"])
+        if how == "bye":
+            await ch.send({"t": "bye"})
+        if how == "midframe":
+            writer.write(b"\x00\x00\x01\x00partial")
+            await writer.drain()
+        await asyncio.sleep(rng.uniform(0, 0.05))
+        writer.transport.abort() if how == "rst" else writer.close()
+
+    await session(0, pair=True)
+    await asyncio.sleep(1)
+    base = summary(await phone.stats())
+    base_live = await phone.live_instances(*classes)
+    t0 = time.monotonic()
+    for i in range(1, 601):
+        await session(i)
+    t_run = time.monotonic() - t0
+    await asyncio.sleep(12)
+    after = summary(await phone.stats())
+    live = await phone.live_instances(*classes)
+    values = collections.Counter(e["value"] for _, e in phone.events("action"))
+    log(
+        f"paired churn: 600 sessions in {t_run:.1f}s; actions executed {sum(values.values())}, duplicates {[v for v, n in values.items() if n > 1]}"
+    )
+    log("jvm before", base, base_live)
+    log("jvm after ", after, live)
+    assert all(n == 1 for n in values.values())
+    assert after["sessions"] == 0 and after["send_threads"] == 0 and after["unauthenticated"] == 0
+    assert live["dev.orbit.protocol.ResponderSession"] <= 1
