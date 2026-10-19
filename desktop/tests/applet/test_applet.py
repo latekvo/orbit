@@ -3,7 +3,7 @@ import pytest
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QSlider, QToolButton
 
-from conftest import make_mock
+from applet_helpers import make_mock
 from orbit.applet import model
 from orbit.applet.cards import ActivityCard
 from orbit.applet.client import DaemonClient

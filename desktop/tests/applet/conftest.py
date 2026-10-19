@@ -7,7 +7,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 import pytest  # noqa: E402
 
-from mock_orbitd import MockOrbitd  # noqa: E402
+from applet_helpers import make_mock  # noqa: E402
 
 
 @pytest.fixture(scope="session")
@@ -30,13 +30,6 @@ def sock_path():
     d = tempfile.mkdtemp(prefix="orb", dir="/tmp")
     yield str(Path(d) / "orbitd.sock")
     shutil.rmtree(d, ignore_errors=True)
-
-
-def make_mock(sock_path, **kw):
-    kw.setdefault("evolve", False)
-    m = MockOrbitd(sock_path, **kw)
-    m.start()
-    return m
 
 
 @pytest.fixture
