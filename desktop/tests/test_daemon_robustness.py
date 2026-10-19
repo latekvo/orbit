@@ -267,6 +267,40 @@ async def test_art_keys_are_listed_once_the_art_arrived(make_daemon, short_tmp, 
         assert art == {"mime": "image/jpeg", "data": base64.b64encode(cover).decode()}
 
 
+async def test_previous_art_stands_in_until_a_variant_of_the_same_track_arrives(make_daemon, short_tmp):
+    small, full = b"small cover", b"full cover"
+    small_key, full_key = (hashlib.sha256(img).hexdigest()[:16] for img in (small, full))
+    track = {"id": "a", "kind": "media", "title": "Song", "subtitle": "Artist", "actions": []}
+    step = asyncio.Queue()
+
+    async def script(ch):
+        await ready(ch)
+        await ch.send({"t": "art", "key": small_key, "mime": "image/jpeg", "data": base64.b64encode(small).decode()})
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [{**track, "artKey": small_key}]})
+        await step.get()
+        await ch.send({"t": "upsert", "now": now_ms(), "activity": {**track, "artKey": full_key}})
+        await step.get()
+        await ch.send({"t": "upsert", "now": now_ms(), "activity": {**track, "title": "Next", "artKey": "f" * 16}})
+        await asyncio.sleep(30)
+
+    def listed(**match):
+        return [a for a in daemon.activities_json() if all(a.get(k) == v for k, v in match.items())]
+
+    def received(key):
+        return any(a.get("artKey") == key for d in daemon.devices.values() for a in d.activities.values())
+
+    async with RawPhone(script) as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        await until(lambda: listed(artKey=small_key))
+        step.put_nowait(1)
+        await until(lambda: received(full_key))
+        assert listed(title="Song", artKey=small_key)  # same track: the small variant stays until the full one arrives
+        step.put_nowait(1)
+        [next_track] = await until(lambda: listed(title="Next"))
+        assert "artKey" not in next_track  # a different track never shows the previous cover
+
+
 async def test_crashed_connector_is_restarted(make_daemon, short_tmp, monkeypatch):
     monkeypatch.setattr(core, "CONNECTOR_RESTART_DELAY", 0.1)
     real_routes, calls = core.Daemon.routes, []

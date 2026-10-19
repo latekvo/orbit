@@ -70,6 +70,8 @@ class Device:
     # The activities are the last ones seen before the session dropped (until the next snapshot).
     stale: bool = False
     art: OrderedDict[str, tuple[str, bytes]] = field(default_factory=OrderedDict)
+    # (activity id, art field) -> (key, what it depicts) last listed; see Daemon._activity_json.
+    shown_art: dict[tuple[str, str], tuple[str, Any]] = field(default_factory=dict)
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     connector: asyncio.Task | None = None
     # Cleared by devices.disconnect so the device is not reconnected until the user asks again.
@@ -304,8 +306,22 @@ class Daemon:
 
     @staticmethod
     def _activity_json(dev: Device, activity: dict[str, Any]) -> dict[str, Any]:
-        """``activity`` as listed: art keys only once the art is here, since it may follow the activity."""
-        a = {k: v for k, v in activity.items() if k not in ART_FIELDS or v in dev.art}
+        """``activity`` as listed: art keys only once the art is here, since it may follow the activity.
+
+        Until then the previously listed image stands in if it depicts the same thing (same app
+        icon; same title and subtitle for art), e.g. while a full-size variant replaces the small
+        BLE one after a switch to LAN.
+        """
+        a = {k: v for k, v in activity.items() if k not in ART_FIELDS}
+        for f in ART_FIELDS:
+            key = activity.get(f)
+            depicts = None if f == "iconKey" else (activity.get("title"), activity.get("subtitle"))
+            slot = (activity["id"], f)
+            if key in dev.art:
+                a[f] = key
+                dev.shown_art[slot] = (key, depicts)
+            elif (shown := dev.shown_art.get(slot)) and shown[1] == depicts and shown[0] in dev.art:
+                a[f] = shown[0]
         a["stale"] = dev.stale
         return a
 
@@ -728,7 +744,9 @@ class Daemon:
 
     def _evict_art(self, dev: Device) -> None:
         """LRU-evict art over the limits, never art referenced by a current activity (it is not resent)."""
+        dev.shown_art = {slot: v for slot, v in dev.shown_art.items() if slot[0] in dev.activities}
         referenced = {a.get(k) for a in dev.activities.values() for k in ART_FIELDS}
+        referenced |= {key for key, _ in dev.shown_art.values()}
         for key in [k for k in dev.art if k not in referenced]:
             if len(dev.art) <= ART_MAX_ENTRIES and sum(len(v[1]) for v in dev.art.values()) <= ART_MAX_BYTES:
                 break
