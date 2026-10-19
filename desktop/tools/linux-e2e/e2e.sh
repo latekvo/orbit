@@ -64,8 +64,8 @@ out=$(DBUS_SESSION_BUS_ADDRESS=unix:path=/nonexistent orbit-mpris 2>&1); rc=$?
 printf '%s (exit %s)\n' "$out" "$rc"
 check "exits 1 with a message" sh -c "[ $rc -eq 1 ] && printf '%s' \"\$1\" | grep -q 'no D-Bus session bus'" _ "$out"
 
-say "unit + D-Bus tests (Linux, real session bus)"
-(cd /work/desktop && run pytest -q -rs tests/test_mpris.py) && pass "pytest" || fail "pytest"
+say "full test suite (Linux, real session bus)"
+(cd /work/desktop && run pytest -q -rs tests) && pass "pytest" || fail "pytest"
 
 scenario_stub() {
     STUB="python3 $HERE/stub_orbitd.py"
@@ -185,16 +185,21 @@ scenario_real() {
     before=$(playerctl -p "$P" status)
     run playerctl -p "$P" play-pause
     eventually "play-pause toggles status (was $before)" sh -c "test \"\$(playerctl -p '$P' status)\" != '$before'"
+    eventually "fakephone executed media.pause" grep -q "action media.pause -> media paused" "$W/fakephone.log"
     eventually "PropertiesChanged PlaybackStatus" monitor_has PropertiesChanged PlaybackStatus
     title=$(meta xesam:title)
     if [ "$(busctl --user get-property "$NAME" /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player CanGoNext)" = "b true" ]; then
         run playerctl -p "$P" next
         eventually "next changes the title" sh -c "test \"\$(playerctl -p '$P' metadata xesam:title)\" != '$title'"
+        eventually "fakephone executed media.next" grep -q "action media.next -> media next" "$W/fakephone.log"
     fi
     if [ "$(busctl --user get-property "$NAME" /org/mpris/MediaPlayer2 org.mpris.MediaPlayer2.Player CanSeek)" = "b true" ]; then
         run playerctl -p "$P" position 5
         eventually "position follows a seek" pos_between 5 8
+        eventually "fakephone executed media.seek" grep -q "action media.seek -> media seek to 0:05" "$W/fakephone.log"
     fi
+    run grep "action" "$W/fakephone.log"
+    run orbit activities
     say "phone goes away"
     kill "$PHONE_PID"
     eventually "player vanishes" no_player
