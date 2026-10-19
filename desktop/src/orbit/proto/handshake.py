@@ -30,6 +30,7 @@ from .crypto import (
 
 VERSION = 1
 MAX_FRAME = 1 << 20
+MAX_HANDSHAKE_FRAME = 4096  # commit / hello / error before the secure channel (spec 2)
 
 
 class ProtocolError(Exception):
@@ -68,14 +69,14 @@ class FrameStream:
         self.reader = reader
         self.writer = writer
 
-    async def read_frame(self) -> bytes:
+    async def read_frame(self, limit: int = MAX_FRAME) -> bytes:
         (length,) = struct.unpack(">I", await self.reader.readexactly(4))
-        if length == 0 or length > MAX_FRAME:
+        if length == 0 or length > limit:
             raise ProtocolError("bad_frame", f"frame length {length}")
         return await self.reader.readexactly(length)
 
-    async def write_frame(self, body: bytes) -> None:
-        if not 0 < len(body) <= MAX_FRAME:
+    async def write_frame(self, body: bytes, limit: int = MAX_FRAME) -> None:
+        if not 0 < len(body) <= limit:
             raise ProtocolError("bad_frame", f"frame length {len(body)}")
         self.writer.write(struct.pack(">I", len(body)) + body)
         await self.writer.drain()
@@ -173,10 +174,10 @@ async def initiate(
     eph = eph or KeyPair.generate()
     hello_i = _hello("initiator", identity, eph, nonce or os.urandom(16), name, platform)
     commit = encode({"t": "commit", "v": VERSION, "c": b64e(hashlib.sha256(hello_i).digest())})
-    await stream.write_frame(commit)
-    hello_r = await stream.read_frame()
+    await stream.write_frame(commit, MAX_HANDSHAKE_FRAME)
+    hello_r = await stream.read_frame(MAX_HANDSHAKE_FRAME)
     peer, peer_eph = _parse_hello(hello_r, "responder")
-    await stream.write_frame(hello_i)
+    await stream.write_frame(hello_i, MAX_HANDSHAKE_FRAME)
     th = transcript_hash(commit, hello_r, hello_i)
     k_i2r, k_r2i = session_keys(th, eph.dh(peer_eph), identity.dh(peer.static))
     return SecureChannel(stream, peer, sas_code(th), send_key=k_i2r, recv_key=k_r2i)
@@ -192,7 +193,7 @@ async def respond(
     nonce: bytes | None = None,
 ) -> SecureChannel:
     eph = eph or KeyPair.generate()
-    commit = await stream.read_frame()
+    commit = await stream.read_frame(MAX_HANDSHAKE_FRAME)
     msg = decode(commit)
     if msg["t"] != "commit":
         raise ProtocolError("bad_commit", "expected commit")
@@ -206,8 +207,8 @@ async def respond(
     except (KeyError, ValueError, TypeError) as e:
         raise ProtocolError("bad_commit", str(e)) from e
     hello_r = _hello("responder", identity, eph, nonce or os.urandom(16), name, platform)
-    await stream.write_frame(hello_r)
-    hello_i = await stream.read_frame()
+    await stream.write_frame(hello_r, MAX_HANDSHAKE_FRAME)
+    hello_i = await stream.read_frame(MAX_HANDSHAKE_FRAME)
     if hashlib.sha256(hello_i).digest() != commitment:
         raise ProtocolError("bad_commit", "hello does not match commitment")
     peer, peer_eph = _parse_hello(hello_i, "initiator")

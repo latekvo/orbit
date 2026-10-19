@@ -19,6 +19,52 @@ if TYPE_CHECKING:
 log = logging.getLogger(__name__)
 
 UNPAIRED_ALLOWED = {"pair_request", "pair_decision", "ping", "pong", "bye", "error"}
+SENT_THEN_LOST = "connection lost after the action was sent; it may have been applied"
+NO_RESPONSE = "phone did not respond"
+
+
+class LinkDown(ConnectionError):
+    """The transport is gone. ``sent`` is False only if no byte of the failed frame can have reached the phone."""
+
+    def __init__(self, cause: str, sent: bool) -> None:
+        super().__init__(cause)
+        self.sent = sent
+
+
+class ActionNotSent(Exception):
+    """The session ended before the action left this computer, so it is safe to send it on the next session."""
+
+
+class WatchedReader:
+    """FrameStream reader that records when bytes arrive and whether a frame is half-read.
+
+    Relies on FrameStream.read_frame reading a 4-byte header, then the body: ``mid_frame`` is
+    true from a frame's first byte until its last.
+    """
+
+    def __init__(self, reader: asyncio.StreamReader) -> None:
+        self._reader = reader
+        self.last_byte = time.monotonic()
+        self.mid_frame = False
+        self._next_is_header = True
+
+    async def readexactly(self, n: int) -> bytes:
+        buf = bytearray()
+        while len(buf) < n:
+            chunk = await self._reader.read(n - len(buf))
+            if not chunk:
+                raise asyncio.IncompleteReadError(bytes(buf), n)
+            buf += chunk
+            self.last_byte = time.monotonic()
+            self.mid_frame = True
+        self._next_is_header = not self._next_is_header
+        self.mid_frame = not self._next_is_header
+        return bytes(buf)
+
+
+def _retrieve(fut: asyncio.Future) -> None:
+    if not fut.cancelled():
+        fut.exception()
 
 
 class Pairing:
@@ -50,21 +96,42 @@ class Session:
         self._pending: dict[int, asyncio.Future] = {}
         self._send_lock = asyncio.Lock()
         self._tasks: list[asyncio.Task] = []
-        self._last_rx = self._last_tx = time.monotonic()
+        self._rx: WatchedReader = channel.stream.reader
+        self.opened = self._last_tx = time.monotonic()
 
     @property
     def paired(self) -> bool:
         return self.local_paired and self.remote_paired
 
     async def send(self, msg: dict[str, Any]) -> None:
-        async with self._send_lock:
-            await self.channel.send(msg)
+        """Send one frame within ``daemon.send_timeout``, or close the session (the link is stalled).
+
+        A caller cancelled while waiting for its turn sends nothing; once writing has started the
+        frame is finished regardless, so a cancelled caller never cuts a frame in half.
+        """
+        await self._send_lock.acquire()
+        write = asyncio.ensure_future(self._write_locked(msg))
+        write.add_done_callback(_retrieve)
+        await asyncio.shield(write)
+
+    async def _write_locked(self, msg: dict[str, Any]) -> None:
+        try:
+            if self.closed.is_set():
+                raise LinkDown(f"session closed: {self.close_reason}", sent=False)
+            timeout = self.daemon.send_timeout
+            try:
+                await asyncio.wait_for(self.channel.send(msg), timeout)
+            except TimeoutError:
+                reason = f"link stalled: sending took over {timeout:g} s"
+                self.close_reason = self.close_reason or reason
+                self._finish()
+                raise LinkDown(reason, sent=True) from None
             self._last_tx = time.monotonic()
+        finally:
+            self._send_lock.release()
 
     async def recv(self) -> dict[str, Any]:
-        msg = await self.channel.recv()
-        self._last_rx = time.monotonic()
-        return msg
+        return await self.channel.recv()
 
     async def exchange_ready(self, timeout: float) -> None:
         """Send our ``ready`` and wait for the phone's (spec 3.4)."""
@@ -111,16 +178,25 @@ class Session:
         try:
             await self.send(msg)
             result = await asyncio.wait_for(fut, timeout)
+        except LinkDown as e:
+            if e.sent:
+                raise ApiError("failed", SENT_THEN_LOST) from None
+            self._pending.pop(req, None)
+            self.close_reason = self.close_reason or f"connection lost: {e}"
+            self._finish()
+            raise ActionNotSent(str(e)) from None
         except TimeoutError:
-            raise ApiError("timeout", f"no action_result within {timeout:g} s") from None
+            raise ApiError("timeout", NO_RESPONSE) from None
         except ProtocolError as e:
             if e.code == "bad_frame":
                 raise ApiError("bad_request", "action message too large") from None
             raise ApiError("not_connected", str(e)) from None
-        except ConnectionError as e:
-            raise ApiError("not_connected", str(e)) from None
+        except ConnectionError:
+            raise ApiError("failed", SENT_THEN_LOST) from None
         finally:
             self._pending.pop(req, None)
+            if fut.done():  # failed by _finish while we were still sending
+                _retrieve(fut)
         out: dict[str, Any] = {"ok": result.get("ok") is True}
         if result.get("error") is not None:
             out["error"] = str(result["error"])
@@ -139,7 +215,16 @@ class Session:
         if self.closed.is_set():
             return
         self.close_reason = self.close_reason or "closed"
-        log.info("session %s with %s (%s) closed: %s", self.id, self.peer.name, self.peer.id, self.close_reason)
+        log.info(
+            "session_closed session=%s device=%s name=%r transport=%s address=%s uptime=%.1fs cause=%r",
+            self.id,
+            self.peer.id,
+            self.peer.name,
+            self.transport,
+            self.address,
+            time.monotonic() - self.opened,
+            self.close_reason,
+        )
         with contextlib.suppress(Exception):
             self.channel.close()
         current = asyncio.current_task()
@@ -180,8 +265,10 @@ class Session:
         d = self.daemon
         while True:
             now = time.monotonic()
-            if now - self._last_rx >= d.dead_after:
-                self.close_reason = f"no data from phone for {d.dead_after:g} s"
+            silent = now - self._rx.last_byte
+            if silent >= d.dead_after or (self._rx.mid_frame and silent >= d.stall_after):
+                what = "mid-frame" if silent < d.dead_after else "from phone"
+                self.close_reason = f"no data {what} for {silent:.0f} s"
                 self._finish()
                 return
             if now - self._last_tx >= d.keepalive:
@@ -193,7 +280,7 @@ class Session:
                     self._finish()
                     return
                 continue
-            wake = min(self._last_rx + d.dead_after, self._last_tx + d.keepalive)
+            wake = min(self._rx.last_byte + min(d.dead_after, d.stall_after), self._last_tx + d.keepalive)
             await asyncio.sleep(max(0.01, wake - now))
 
     async def _pairing_deadline(self) -> None:

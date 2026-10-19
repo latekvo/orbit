@@ -531,3 +531,20 @@ def test_advertised_addresses_for_ipv6_hosts():
     assert advertised_addresses("::1") == ["::1"]
     assert advertised_addresses("127.0.0.1") == ["127.0.0.1"]
     assert all(":" in a for a in advertised_addresses("::"))
+
+
+async def test_session_neither_paired_nor_pairing_is_closed_after_the_deadline(make_phone):
+    phone = await make_phone(unpaired_timeout=0.3)
+    idle = await Laptop().connect(phone)
+    assert await idle.expect_closed(1.0) == [{"t": "bye", "reason": "not paired"}]
+
+    pending = await Laptop().connect(phone)
+    await pending.send({"t": "pair_request"})
+    await pending.recv_until(lambda m: m["t"] == "pair_decision")  # phone accepted; laptop undecided
+    await pending.assert_silent(0.6)
+
+    laptop = Laptop()
+    await pair(phone, laptop)
+    await asyncio.sleep(0.5)
+    result, _ = await laptop.action("media:com.example.music", "media.pause")
+    assert result["ok"] is True

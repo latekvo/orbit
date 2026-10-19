@@ -3,6 +3,7 @@
 from .crypto import KeyPair, device_id, sas_code
 from .handshake import (
     MAX_FRAME,
+    MAX_HANDSHAKE_FRAME,
     VERSION,
     FrameStream,
     Peer,
@@ -16,6 +17,7 @@ from .handshake import (
 
 __all__ = [
     "MAX_FRAME",
+    "MAX_HANDSHAKE_FRAME",
     "VERSION",
     "FrameStream",
     "KeyPair",

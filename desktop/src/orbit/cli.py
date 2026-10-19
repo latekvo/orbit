@@ -81,7 +81,7 @@ def describe_activity(a: dict[str, Any], now: int, device_name: str) -> list[str
 
 
 def device_line(d: dict[str, Any]) -> str:
-    state = "connected via " + str(d.get("transport")) if d["connected"] else "offline"
+    state = "connected via " + str(d.get("transport")) if d["connected"] else d.get("state") or "offline"
     paired = "paired" if d["paired"] else "not paired"
     if d.get("provisional"):
         paired += " (provisional id from BLE advertisement)"

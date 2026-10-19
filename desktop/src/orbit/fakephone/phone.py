@@ -61,6 +61,7 @@ class Session:
         self._loop = asyncio.get_running_loop()
         self._last_sent = self._last_recv = self._loop.time()
         self._pair_timer: asyncio.TimerHandle | None = None
+        self._unpaired_timer: asyncio.TimerHandle | None = None
         self._prompt_task: asyncio.Task[None] | None = None
 
     def __repr__(self) -> str:
@@ -233,6 +234,11 @@ class Session:
         if self.pairing and not self.closed and not self.phone.frozen:
             self._pairing_failed("timeout")
 
+    def _unpaired_expired(self) -> None:
+        if not (self.paired or self.pairing or self.closed or self.phone.frozen):
+            reason = f"neither paired nor pairing {self.phone.unpaired_timeout:g}s after the handshake"
+            self.close(reason, bye="not paired")
+
     # -- lifecycle --------------------------------------------------------------------------------------------
 
     async def _watchdog(self) -> None:
@@ -263,6 +269,8 @@ class Session:
         self.pairing = False
         if self._pair_timer:
             self._pair_timer.cancel()
+        if self._unpaired_timer:
+            self._unpaired_timer.cancel()
         if self._prompt_task:
             self._prompt_task.cancel()
         self.phone._session_closed(self)
@@ -271,6 +279,7 @@ class Session:
     async def run(self) -> None:
         tasks = [asyncio.create_task(c) for c in (self._writer(), self._reader(), self._watchdog())]
         writer = tasks[0]
+        self._unpaired_timer = self._loop.call_later(self.phone.unpaired_timeout, self._unpaired_expired)
         self.send({"t": "ready", "paired": self.local_ready, "now": now_ms()})
         try:
             await self._closing.wait()
@@ -298,9 +307,10 @@ class FakePhone:
         mdns: bool = True,
         auto_accept: bool | None = None,
         tick: float = 1.0,
-        keepalive: float = 20.0,
-        dead_after: float = 60.0,
+        keepalive: float = 10.0,
+        dead_after: float = 30.0,
         pairing_timeout: float = 120.0,
+        unpaired_timeout: float = 30.0,
         platform: str = "android",
         prompt: Prompt | None = None,
     ) -> None:
@@ -315,6 +325,7 @@ class FakePhone:
         self.keepalive = keepalive
         self.dead_after = dead_after
         self.pairing_timeout = pairing_timeout
+        self.unpaired_timeout = unpaired_timeout
         self.platform = platform
         self.log = logging.getLogger("orbit.fakephone")
 

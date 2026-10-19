@@ -68,8 +68,8 @@ def build_parser() -> argparse.ArgumentParser:
     decision.add_argument("--auto-reject", action="store_true", help="reject every pairing request")
     p.add_argument("--tick", type=float, default=1.0, help="seconds between simulation steps (default 1.0)")
     p.add_argument("--platform", default="android", help="hello.platform and TXT pf (default android)")
-    p.add_argument("--keepalive", type=float, default=20.0, help="ping after this many idle seconds (default 20)")
-    p.add_argument("--dead-after", type=float, default=60.0, help="close after this many silent seconds (default 60)")
+    p.add_argument("--keepalive", type=float, default=10.0, help="ping after this many idle seconds (default 10)")
+    p.add_argument("--dead-after", type=float, default=30.0, help="close after this many silent seconds (default 30)")
     p.add_argument("--pairing-timeout", type=float, default=120.0, help="abandon pairing after seconds (default 120)")
     p.add_argument("-v", "--verbose", action="store_true", help="also log every message sent and received")
     return p

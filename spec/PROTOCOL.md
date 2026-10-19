@@ -54,7 +54,8 @@ uint32 big-endian  length of body (1 .. 1048576)
 bytes[length]      body
 ```
 
-A frame with length 0 or > 1 MiB is a protocol error (close the stream).
+A frame with length 0 or > 1 MiB is a protocol error (close the stream). Handshake frames
+(3.2) are at most 4096 bytes; a longer one is a protocol error too.
 Handshake bodies are UTF-8 JSON. After the handshake every body is an encrypted record
 (section 4) whose plaintext is UTF-8 JSON.
 
@@ -140,6 +141,8 @@ Pairing:
    becomes paired (R then sends `snapshot`). Any `accepted:false` -> both close.
 5. Pairing that is not completed within 120 s is abandoned (close).
 
+R closes a session that is neither paired nor pairing 30 s after the handshake.
+
 `{"t":"unpair"}` from either side: the receiver removes the pin and closes.
 
 ## 4. Encrypted records
@@ -166,7 +169,7 @@ its own clock. Media positions are valid at the message's `now`.
 | `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64). Sent before the first activity that references `key` in this session. `key` = first 16 hex chars of SHA-256(data). Images are at most 256x256. |
 | `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below) |
 | `action_result` | R->I | `req`, `ok` (bool), `error` (optional string) |
-| `ping` / `pong` | both | `req` (int). Send `ping` after 20 s without sending anything; close after 60 s without receiving anything. |
+| `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive). A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
 | `bye` | both | `reason` (optional). Sender closes after sending. |
 | `error` | both | `code`, `message` |
 

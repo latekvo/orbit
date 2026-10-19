@@ -200,11 +200,17 @@ async def test_disconnect_suppresses_reconnect_until_connect(make_daemon, make_p
 
 async def test_frozen_phone_is_detected_dead(make_daemon, make_phone, api_for):
     phone = await make_phone(auto_accept=True)
-    daemon = await make_daemon(keepalive=0.2, dead_after=0.8)
+    daemon = await make_daemon(keepalive=0.2, dead_after=0.8, stale_grace=0.5)
     api = await api_for(daemon)
     await pair(api, phone)
     session = daemon.devices[phone.device_id].session
     phone.freeze()
     await asyncio.wait_for(session.closed.wait(), 3)
     assert "no data" in session.close_reason
+    # Kept, marked stale, while the device is expected back; dropped once the grace period ends.
+    acts = await api.call("activities.list")
+    assert acts and all(a["stale"] is True for a in acts)
+    assert (await _device(api, phone.device_id))["state"] == "reconnecting"
+    await asyncio.sleep(0.6)
     assert await api.call("activities.list") == []
+    assert (await _device(api, phone.device_id))["state"] == "offline"

@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import socket
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -21,6 +22,7 @@ log = logging.getLogger(__name__)
 
 # A subscriber that stops reading is dropped rather than buffering events without bound.
 MAX_CLIENT_BUFFER = 32 * 1024 * 1024
+CALL_TIMEOUT = 30.0  # every method answers within this (spec/LOCAL_API.md)
 
 
 class StartupError(RuntimeError):
@@ -54,11 +56,20 @@ class ApiServer:
         self._tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
-        ensure_private_dir(self.path.parent)
-        if self.path.exists():
-            if _socket_alive(self.path):
-                raise AlreadyRunning(f"another orbitd is already listening on {self.path}")
-            self.path.unlink()
+        try:
+            ensure_private_dir(self.path.parent)
+            try:
+                mode = self.path.lstat().st_mode
+            except FileNotFoundError:
+                mode = None
+            if mode is not None:
+                if not stat.S_ISSOCK(mode):
+                    raise StartupError(f"{self.path} exists and is not a socket; not replacing it")
+                if _socket_alive(self.path):
+                    raise AlreadyRunning(f"another orbitd is already listening on {self.path}")
+                self.path.unlink()
+        except OSError as e:
+            raise StartupError(f"cannot prepare {self.path}: {e.strerror or e}") from e
         old = os.umask(0o177)
         try:
             self._server = await asyncio.start_unix_server(self._handle, str(self.path), limit=LINE_LIMIT)
@@ -120,7 +131,11 @@ class ApiServer:
                 params = {}
             if not isinstance(method, str) or not isinstance(params, dict):
                 raise ApiError("bad_request", "'method' must be a string and 'params' an object")
-            result = await self._call(client, method, params)
+            try:
+                async with asyncio.timeout(CALL_TIMEOUT):
+                    result = await self._call(client, method, params)
+            except TimeoutError:
+                raise ApiError("timeout", f"orbitd gave up after {CALL_TIMEOUT:g} s") from None
             client.send({"id": req_id, "result": result})
             if method == "subscribe":
                 for kind in ("devices", "pairing", "activities"):

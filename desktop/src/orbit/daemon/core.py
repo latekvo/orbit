@@ -10,6 +10,7 @@ import hashlib
 import logging
 import sys
 import time
+from asyncio import FIRST_COMPLETED
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -21,7 +22,7 @@ from ..client import ApiError
 from ..paths import ensure_private_dir
 from ..proto import FrameStream, device_id, initiate
 from ..store import PeerStore, PinnedPeer, load_or_create_identity
-from .session import Session
+from .session import NO_RESPONSE, ActionNotSent, Session, WatchedReader
 from .timeconv import to_local
 
 log = logging.getLogger(__name__)
@@ -32,6 +33,7 @@ BLE_STALE_AFTER = 30.0
 RECONNECT_MAX_DELAY = 60.0
 STABLE_SESSION = 30.0
 CONNECTOR_RESTART_DELAY = 5.0
+BLE_RETRY_MIN, BLE_RETRY_MAX = 2.0, 30.0
 
 
 @dataclass(frozen=True)
@@ -59,9 +61,13 @@ class Device:
     platform: str = ""
     session: Session | None = None
     lan: dict[str, LanRecord] = field(default_factory=dict)
-    ble: Any = None
-    ble_seen: float = 0.0
+    # BLE address -> (bleak device, last seen). Phones rotate their address, so several may be current.
+    ble: dict[str, tuple[Any, float]] = field(default_factory=dict)
+    # Set when an address not in ``ble`` is advertised; an attempt to an older address is abandoned.
+    ble_moved: asyncio.Event = field(default_factory=asyncio.Event)
     activities: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The activities are the last ones seen before the session dropped (until the next snapshot).
+    stale: bool = False
     art: OrderedDict[str, tuple[str, bytes]] = field(default_factory=OrderedDict)
     wake: asyncio.Event = field(default_factory=asyncio.Event)
     connector: asyncio.Task | None = None
@@ -69,6 +75,19 @@ class Device:
     auto: bool = True
     # Seen only via BLE and never connected: ``id`` is the advertised 16-hex prefix (spec/LOCAL_API.md).
     provisional: bool = False
+    # Running while a paired session that dropped is expected back: state "reconnecting".
+    grace: asyncio.TimerHandle | None = None
+    lost_at: float | None = None
+    # Replaced (after being set) whenever ``session`` or ``grace`` changes, to wake waiting actions.
+    transition: asyncio.Event = field(default_factory=asyncio.Event)
+
+
+def _combined(errors: list[ApiError]) -> ApiError:
+    if len(errors) == 1:
+        return errors[0]
+    codes = {e.code for e in errors}
+    detail = "; ".join(e.message for e in errors)
+    return ApiError(codes.pop() if len(codes) == 1 else "failed", f"all {len(errors)} addresses failed: {detail}")
 
 
 def format_hostport(host: str, port: int) -> str:
@@ -100,12 +119,19 @@ class Daemon:
         *,
         mdns: bool = True,
         ble: bool = True,
-        keepalive: float = 20.0,
-        dead_after: float = 60.0,
+        keepalive: float = 10.0,
+        dead_after: float = 30.0,
+        stall_after: float = 10.0,
+        send_timeout: float = 5.0,
         pairing_timeout: float = 120.0,
         action_timeout: float = 10.0,
         connect_timeout: float = 10.0,
         tcp_timeout: float = 3.0,
+        ble_link_timeout: float = 4.0,
+        stale_grace: float = 15.0,
+        action_wait: float = 5.0,
+        action_deadline: float = 12.0,
+        connect_deadline: float = 12.0,
     ) -> None:
         from .api import ApiServer
 
@@ -117,10 +143,17 @@ class Daemon:
         self.store = PeerStore(config_dir)
         self.keepalive = keepalive
         self.dead_after = dead_after
+        self.stall_after = stall_after
+        self.send_timeout = send_timeout
         self.pairing_timeout = pairing_timeout
         self.action_timeout = action_timeout
         self.connect_timeout = connect_timeout
         self.tcp_timeout = tcp_timeout
+        self.ble_link_timeout = ble_link_timeout
+        self.stale_grace = stale_grace
+        self.action_wait = action_wait
+        self.action_deadline = action_deadline
+        self.connect_deadline = connect_deadline
         self.devices: dict[str, Device] = {}
         self.sessions: dict[str, Session] = {}
         self.api = ApiServer(self, socket_path)
@@ -128,6 +161,8 @@ class Daemon:
         self._use_ble = ble
         self._lan = None
         self._ble = None
+        self.ble_state = "off"
+        self.ble_error: str | None = None
         self._stopping = False
         self._dirty: set[str] = set()
         self._flush_scheduled = False
@@ -145,16 +180,28 @@ class Daemon:
 
             self._lan = LanDiscovery(self.on_lan)
             await self._lan.start()
-        if self._use_ble:
-            from .discovery import BleDiscovery
-
-            self._ble = BleDiscovery(self.on_ble)
-            if not await self._ble.start():
-                self._ble = None
-            else:
-                self._spawn(self._ble_expiry())
         for dev in self.devices.values():
             self._ensure_connector(dev)
+        if self._use_ble:
+            # In the background: starting can block on a macOS permission prompt, or fail until
+            # Bluetooth is switched on.
+            self.ble_state = "starting"
+            self._spawn(self._start_ble())
+            self._spawn(self._ble_expiry())
+
+    async def _start_ble(self) -> None:
+        from .discovery import BleDiscovery
+
+        delay = BLE_RETRY_MIN
+        while True:
+            scanner = BleDiscovery(self.on_ble)
+            error = await scanner.start()
+            if error is None:
+                self._ble, self.ble_state, self.ble_error = scanner, "scanning", None
+                return
+            self.ble_state, self.ble_error = "unavailable", error
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, BLE_RETRY_MAX)
 
     async def stop(self) -> None:
         self._stopping = True
@@ -201,8 +248,14 @@ class Daemon:
 
     # ---- views -----------------------------------------------------------------------------
 
+    def _ble_fresh(self, dev: Device) -> list[Any]:
+        """Bleak devices advertised within BLE_STALE_AFTER, most recently seen first."""
+        now = time.monotonic()
+        recent = sorted(dev.ble.values(), key=lambda e: e[1], reverse=True)
+        return [d for d, seen in recent if now - seen < BLE_STALE_AFTER]
+
     def _ble_visible(self, dev: Device) -> bool:
-        return dev.ble is not None and time.monotonic() - dev.ble_seen < BLE_STALE_AFTER
+        return bool(self._ble_fresh(dev))
 
     def device_json(self, dev: Device) -> dict[str, Any]:
         pin = self.store.get(dev.id)
@@ -221,6 +274,7 @@ class Daemon:
             "platform": dev.platform,
             "paired": pin is not None,
             "connected": s is not None,
+            "state": "connected" if s else "reconnecting" if dev.grace else "offline",
             "transport": s.transport if s else None,
             "address": address,
             "discovered": (["lan"] if dev.lan else []) + (["ble"] if self._ble_visible(dev) else []),
@@ -245,7 +299,7 @@ class Daemon:
         ]
 
     def activities_json(self) -> list[dict[str, Any]]:
-        return [a for d in self.devices.values() for a in d.activities.values()]
+        return [{**a, "stale": d.stale} for d in self.devices.values() for a in d.activities.values()]
 
     # ---- device bookkeeping ----------------------------------------------------------------
 
@@ -262,6 +316,9 @@ class Daemon:
             self.changed("devices")
 
     def routes(self, dev: Device) -> list[Route]:
+        return self._lan_routes(dev) + self._ble_routes(dev)
+
+    def _lan_routes(self, dev: Device) -> list[Route]:
         routes: list[Route] = []
         seen: set[str] = set()
 
@@ -278,15 +335,16 @@ class Daemon:
         if pin and pin.address:
             with contextlib.suppress(ValueError):
                 add_tcp(*parse_hostport(pin.address), True)
-        if self._ble_visible(dev):
-            from .ble import open_ble
-
-            ble = dev.ble
-            if dev.provisional:
-                routes.append(Route("ble", ble.address, lambda: open_ble(ble), prefix=dev.id))
-            else:
-                routes.append(Route("ble", ble.address, lambda: open_ble(ble), dev.id))
         return routes
+
+    def _ble_routes(self, dev: Device) -> list[Route]:
+        from .ble import open_ble
+
+        expected, prefix = (None, dev.id) if dev.provisional else (dev.id, None)
+        return [
+            Route("ble", ble.address, lambda b=ble: open_ble(b, self.ble_link_timeout), expected, prefix=prefix)
+            for ble in self._ble_fresh(dev)
+        ]
 
     # ---- discovery callbacks ---------------------------------------------------------------
 
@@ -308,7 +366,7 @@ class Daemon:
         log.info("discovered %s (%s) via mDNS at %s", info["name"], dev.id, info["addresses"])
         self.changed("devices")
         dev.wake.set()
-        if dev.session and dev.session.transport == "ble" and dev.auto:
+        if dev.session and dev.session.transport == "ble" and dev.session.paired and dev.auto:
             self._spawn(self._upgrade_to_lan(dev))
 
     def on_ble(self, prefix: str, ble_device: Any, local_name: str | None = None) -> None:
@@ -321,10 +379,15 @@ class Daemon:
             matches = [dev]
         for dev in matches:
             fresh = not self._ble_visible(dev)
-            dev.ble, dev.ble_seen = ble_device, time.monotonic()
+            moved = ble_device.address not in dev.ble
+            dev.ble[ble_device.address] = (ble_device, time.monotonic())
             if fresh:
                 log.info("discovered %s (%s) via BLE at %s", dev.name, dev.id, ble_device.address)
                 self.changed("devices")
+            elif moved:
+                log.info("%s (%s) now advertises via BLE at %s", dev.name, dev.id, ble_device.address)
+            if fresh or moved:
+                dev.ble_moved.set()
                 dev.wake.set()
 
     def _absorb_provisional(self, dev: Device) -> None:
@@ -333,23 +396,26 @@ class Daemon:
         if prov is None or not prov.provisional:
             return
         del self.devices[prov.id]
-        if prov.ble is not None and prov.ble_seen > dev.ble_seen:
-            dev.ble, dev.ble_seen = prov.ble, prov.ble_seen
+        for address, entry in prov.ble.items():
+            if address not in dev.ble or dev.ble[address][1] < entry[1]:
+                dev.ble[address] = entry
         self.changed("devices")
 
     async def _ble_expiry(self) -> None:
         while True:
             await asyncio.sleep(BLE_STALE_AFTER / 3)
+            now = time.monotonic()
             for dev in list(self.devices.values()):
-                if dev.ble is not None and not self._ble_visible(dev):
-                    dev.ble = None
-                    self.changed("devices")
-                    self._prune(dev)
+                kept = {a: e for a, e in dev.ble.items() if now - e[1] < BLE_STALE_AFTER}
+                if len(kept) != len(dev.ble):
+                    dev.ble = kept
+                    if not kept:
+                        self.changed("devices")
+                        self._prune(dev)
 
     async def _upgrade_to_lan(self, dev: Device) -> None:
-        lan = [r for r in self.routes(dev) if r.kind == "lan"]
         with contextlib.suppress(ApiError):
-            await self.connect_routes(lan, explicit=False)
+            await self.connect_routes(self._lan_routes(dev), explicit=False)
 
     # ---- connecting ------------------------------------------------------------------------
 
@@ -374,19 +440,18 @@ class Daemon:
     async def _connector(self, dev: Device) -> None:
         """Keep a paired device connected: connect when reachable, reconnect with exponential backoff.
 
-        The backoff only resets after a session that stayed up for STABLE_SESSION, so a phone that
-        accepts and immediately drops us is not hammered.
+        A session that stayed up for STABLE_SESSION is reconnected at once and resets the backoff;
+        a phone that accepts and immediately drops us is not hammered.
         """
         delay = 1.0
         while not self._stopping and self.store.get(dev.id) and self.devices.get(dev.id) is dev:
             session = dev.session
             if session is None:
-                routes = self.routes(dev) if dev.auto else []
-                if not routes:
-                    await self._wait_wake(dev, None if not dev.ble else BLE_STALE_AFTER)
+                if not dev.auto or not self.routes(dev):
+                    await self._wait_wake(dev, BLE_STALE_AFTER if dev.ble else None)
                     continue
                 try:
-                    session = await self.connect_routes(routes, explicit=False)
+                    session = await self.connect_device(dev, explicit=False)
                 except ApiError as e:
                     log.info("connecting to %s (%s) failed: %s; retrying in %g s", dev.name, dev.id, e, delay)
                     await self._wait_wake(dev, delay)
@@ -397,8 +462,34 @@ class Daemon:
             dev.wake.clear()  # set by session_closed itself; only later discovery changes may cut the wait short
             if time.monotonic() - started >= STABLE_SESSION:
                 delay = 1.0
+                continue
             await self._wait_wake(dev, delay)
             delay = min(delay * 2, RECONNECT_MAX_DELAY)
+
+    async def connect_device(self, dev: Device, *, explicit: bool, errors: list[ApiError] | None = None) -> Session:
+        """Try the LAN addresses, then each current BLE address, most recently advertised first.
+
+        An attempt to a BLE address is abandoned as soon as the phone advertises a new one, which is
+        tried next: a rotated-away address must not hold up a reachable one.
+        """
+        lan = self._lan_routes(dev)
+        if not lan and not self._ble_visible(dev):
+            raise ApiError("not_connected", "no known address for this device")
+        errors = [] if errors is None else errors
+        for route in lan:
+            try:
+                return await self._connect_route(route, explicit=explicit)
+            except ApiError as e:
+                errors.append(e)
+        tried: set[str] = set()
+        while route := next((r for r in self._ble_routes(dev) if r.address not in tried), None):
+            tried.add(route.address)
+            dev.ble_moved.clear()
+            try:
+                return await self._connect_route(route, explicit=explicit, moved=dev.ble_moved)
+            except ApiError as e:
+                errors.append(e)
+        raise _combined(errors)
 
     async def connect_routes(self, routes: list[Route], *, explicit: bool) -> Session:
         if not routes:
@@ -409,20 +500,36 @@ class Daemon:
                 return await self._connect_route(route, explicit=explicit)
             except ApiError as e:
                 errors.append(e)
-        if len(errors) == 1:
-            raise errors[0]
-        codes = {e.code for e in errors}
-        detail = "; ".join(e.message for e in errors)
-        raise ApiError(codes.pop() if len(codes) == 1 else "failed", f"all {len(errors)} addresses failed: {detail}")
+        raise _combined(errors)
 
-    async def _connect_route(self, route: Route, *, explicit: bool) -> Session:
+    async def _open(self, route: Route, moved: asyncio.Event | None) -> FrameStream:
+        opening = asyncio.ensure_future(route.open())
+        waiter = asyncio.ensure_future(moved.wait()) if moved else None
         try:
             timeout = self.tcp_timeout if route.kind == "lan" else self.connect_timeout
-            stream = await asyncio.wait_for(route.open(), timeout)
+            await asyncio.wait([t for t in (opening, waiter) if t], timeout=timeout, return_when=FIRST_COMPLETED)
+        finally:
+            if waiter:
+                waiter.cancel()
+            if not opening.done():
+                opening.cancel()
+                await asyncio.wait([opening])
+        if opening.cancelled():
+            if waiter and waiter.done() and not waiter.cancelled():
+                raise ApiError("failed", f"gave up on {route.address}: the phone advertised a newer address")
+            raise TimeoutError
+        return opening.result()
+
+    async def _connect_route(self, route: Route, *, explicit: bool, moved: asyncio.Event | None = None) -> Session:
+        try:
+            stream = await self._open(route, moved)
+        except ApiError:
+            raise
         except TimeoutError:
             raise ApiError("timeout", f"connecting to {route.address} timed out") from None
         except Exception as e:  # OSError for TCP; bleak raises its own exception types
             raise ApiError("failed", f"cannot connect to {route.address}: {e}") from None
+        stream = FrameStream(WatchedReader(stream.reader), stream.writer)
         session = None
         try:
             channel = await asyncio.wait_for(
@@ -453,7 +560,8 @@ class Daemon:
         self._absorb_provisional(dev)
         existing = dev.session
         if existing is not None and not existing.closed.is_set():
-            if not (session.transport == "lan" and existing.transport == "ble"):
+            # Only a paired BLE session gives way to LAN; an unpaired one may be mid-pairing.
+            if not (session.transport == "lan" and existing.transport == "ble" and existing.paired):
                 await session.close("already connected", bye=True)
                 return existing
             dev.session = None
@@ -461,6 +569,16 @@ class Daemon:
         dev.name, dev.platform = peer.name, peer.platform
         dev.session = session
         self.sessions[session.id] = session
+        if dev.lost_at is not None:
+            log.info(
+                "reconnected device=%s transport=%s address=%s latency=%.2fs",
+                peer.id,
+                session.transport,
+                session.address,
+                time.monotonic() - dev.lost_at,
+            )
+            dev.lost_at = None
+        self._end_grace(dev)
         log.info(
             "connected to %s (%s) via %s %s, paired=%s/%s, SAS %s",
             peer.name,
@@ -499,12 +617,41 @@ class Daemon:
         dev = self.devices.get(session.peer.id)
         if dev is not None and dev.session is session:
             dev.session = None
-            if dev.activities:
-                dev.activities.clear()
+            if session.paired and dev.auto and self.store.get(dev.id) and not self._stopping:
+                # Expected back: keep the last activities, marked stale, for the grace period.
+                dev.lost_at = time.monotonic()
+                dev.stale = True
+                dev.grace = asyncio.get_running_loop().call_later(self.stale_grace, self._grace_over, dev)
                 self.changed("activities")
+            else:
+                self._clear_activities(dev)
+            self._transition(dev)
             dev.wake.set()
             self._prune(dev)
         self.changed("devices", "pairing")
+
+    def _transition(self, dev: Device) -> None:
+        dev.transition.set()
+        dev.transition = asyncio.Event()
+
+    def _end_grace(self, dev: Device) -> None:
+        if dev.grace is not None:
+            dev.grace.cancel()
+            dev.grace = None
+            self._transition(dev)
+
+    def _grace_over(self, dev: Device) -> None:
+        dev.grace = None
+        log.info("%s (%s) did not come back within %g s; dropping its activities", dev.name, dev.id, self.stale_grace)
+        self._clear_activities(dev)
+        self._transition(dev)
+        self.changed("devices")
+
+    def _clear_activities(self, dev: Device) -> None:
+        dev.stale = False
+        if dev.activities:
+            dev.activities.clear()
+            self.changed("activities")
 
     # ---- session callbacks -----------------------------------------------------------------
 
@@ -534,6 +681,7 @@ class Daemon:
     def set_activities(self, session: Session, activities: list[dict[str, Any]], now: int) -> None:
         if dev := self._live(session):
             dev.activities = {a["id"]: to_local(a, dev.id, now, session.offset) for a in activities}
+            dev.stale = False
             self.changed("activities")
 
     def upsert_activity(self, session: Session, activity: dict[str, Any], now: int) -> None:
@@ -586,26 +734,40 @@ class Daemon:
         return dev
 
     async def api_connect(self, params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[ApiError] = []
         if "host" in params or "port" in params:
             host, port = params.get("host"), params.get("port")
             if not isinstance(host, str) or not host or not isinstance(port, int) or not 0 < port < 65536:
                 raise ApiError("bad_request", "'host' must be a string and 'port' an integer 1-65535")
             route = Route("lan", format_hostport(host, port), lambda: open_tcp(host, port), None, True)
-            session = await self.connect_routes([route], explicit=True)
-            return {"id": session.peer.id}
-        dev = self._known(params.get("id"))
-        dev.auto = True
-        if dev.session is not None:
-            return {"id": dev.id}
-        session = await self.connect_routes(self.routes(dev), explicit=True)
+            attempt = self.connect_routes([route], explicit=True)
+        else:
+            dev = self._known(params.get("id"))
+            dev.auto = True
+            if dev.session is not None:
+                return {"id": dev.id}
+            attempt = self.connect_device(dev, explicit=True, errors=errors)
+        try:
+            async with asyncio.timeout(self.connect_deadline):
+                session = await attempt
+        except TimeoutError:
+            tried = "; ".join(e.message for e in errors)
+            raise ApiError(
+                "timeout", f"no connection within {self.connect_deadline:g} s" + (f" ({tried})" if tried else "")
+            ) from None
         return {"id": session.peer.id}  # differs from the request for a provisional device
 
     async def api_disconnect(self, params: dict[str, Any]) -> bool:
         dev = self._known(params.get("id"))
-        if dev.session is None:
+        if dev.session is None and dev.grace is None:
             raise ApiError("not_connected", f"{dev.id} is not connected")
         dev.auto = False
-        await dev.session.close("disconnected by user", bye=True)
+        if dev.session is None:  # reconnecting: stop
+            self._end_grace(dev)
+            self._clear_activities(dev)
+            self.changed("devices")
+        else:
+            await dev.session.close("disconnected by user", bye=True)
         return True
 
     async def api_forget(self, params: dict[str, Any]) -> bool:
@@ -617,7 +779,8 @@ class Daemon:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(session.send({"t": "unpair"}), 2)
             await session.close("forgotten by user")
-        dev.activities.clear()
+        self._end_grace(dev)
+        self._clear_activities(dev)
         dev.art.clear()
         self._prune(dev)
         self.changed("devices", "activities", "pairing")
@@ -635,18 +798,42 @@ class Daemon:
 
     async def api_action(self, params: dict[str, Any]) -> dict[str, Any]:
         dev_id, activity, action = params.get("device"), params.get("activity"), params.get("action")
+        value = params.get("value")
         if not all(isinstance(v, str) and v for v in (dev_id, activity, action)):
             raise ApiError("bad_request", "'device', 'activity' and 'action' must be non-empty strings")
         dev = self.devices.get(dev_id)
         if dev is None:
             raise ApiError("not_found", f"unknown device {dev_id}")
-        if dev.session is None:
-            raise ApiError("not_connected", f"{dev_id} is not connected")
-        if not dev.session.paired:
-            raise ApiError("not_paired", f"{dev_id} is not paired")
-        if activity not in dev.activities:
-            raise ApiError("not_found", f"unknown activity {activity}")
-        return await dev.session.action(activity, action, params.get("value"), "value" in params, self.action_timeout)
+        try:
+            async with asyncio.timeout(self.action_deadline):
+                return await self._action(dev, activity, action, value, "value" in params)
+        except TimeoutError:
+            raise ApiError("timeout", NO_RESPONSE) from None
+
+    async def _action(self, dev: Device, activity: str, action: str, value: Any, has_value: bool) -> dict[str, Any]:
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.action_wait
+        while True:
+            session = dev.session
+            if session is None:
+                if dev.grace is None:
+                    raise ApiError("not_connected", "phone offline")
+                # Reconnecting: hold the action until the session is back, up to action_wait.
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(dev.transition.wait(), deadline - loop.time())
+                if dev.session is None and loop.time() >= deadline:
+                    raise ApiError("not_connected", "reconnecting")
+                continue
+            if not session.paired:
+                raise ApiError("not_paired", f"{dev.id} is not paired")
+            if activity not in dev.activities:
+                raise ApiError("not_found", f"unknown activity {activity}")
+            try:
+                return await session.action(activity, action, value, has_value, self.action_timeout)
+            except ActionNotSent as e:
+                log.info("action %s on %s not sent (%s); waiting for the next session", action, dev.id, e)
+                with contextlib.suppress(TimeoutError):
+                    await asyncio.wait_for(session.closed.wait(), max(0.0, deadline - loop.time()))
 
     def api_art(self, params: dict[str, Any]) -> dict[str, Any]:
         dev_id, key = params.get("device"), params.get("key")
@@ -660,4 +847,10 @@ class Daemon:
         return {"mime": mime, "data": base64.b64encode(raw).decode("ascii")}
 
     def api_status(self) -> dict[str, Any]:
-        return {"version": __version__, "name": self.name, "deviceId": self.device_id}
+        return {
+            "version": __version__,
+            "name": self.name,
+            "deviceId": self.device_id,
+            "ble": self.ble_state,
+            "bleError": self.ble_error,
+        }
