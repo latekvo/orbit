@@ -87,6 +87,8 @@ class Session:
     async def decide(self, accept: bool) -> None:
         if self.pairing is None:
             raise ApiError("not_found", "no pairing pending for this session")
+        if self.pairing.local is not None:
+            raise ApiError("bad_request", "this pairing was already answered")
         self.pairing.local = accept
         self.daemon.changed("pairing")
         await self.send({"t": "pair_decision", "accepted": accept})
