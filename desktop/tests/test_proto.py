@@ -101,3 +101,20 @@ def test_tampered_record_fails():
     rec[0] ^= 1
     with pytest.raises(Exception):
         CipherState(bytes.fromhex(VECTORS["k_i2r_hex"])).decrypt(bytes(rec))
+
+
+async def test_oversize_record_is_refused_without_desyncing_the_channel():
+    phone, laptop = KeyPair.generate(), KeyPair.generate()
+    received = asyncio.get_running_loop().create_future()
+
+    async def serve(stream):
+        ch = await respond(stream, phone, "Phone", "android")
+        received.set_result(await ch.recv())
+
+    async with tcp_pair(serve) as stream:
+        ch = await initiate(stream, laptop, "Laptop", "macos")
+        with pytest.raises(ProtocolError) as e:
+            await ch.send({"t": "action", "value": "x" * (1 << 20)})
+        assert e.value.code == "bad_frame"
+        await ch.send({"t": "ping", "req": 1})
+        assert await asyncio.wait_for(received, 5) == {"t": "ping", "req": 1}

@@ -15,7 +15,18 @@ from typing import Any, Protocol
 
 from cryptography.exceptions import InvalidTag
 
-from .crypto import CipherState, KeyPair, b64d, b64e, device_id, load_public, sas_code, session_keys, transcript_hash
+from .crypto import (
+    TAG_LEN,
+    CipherState,
+    KeyPair,
+    b64d,
+    b64e,
+    device_id,
+    load_public,
+    sas_code,
+    session_keys,
+    transcript_hash,
+)
 
 VERSION = 1
 MAX_FRAME = 1 << 20
@@ -92,7 +103,11 @@ class SecureChannel:
         self._rx = CipherState(recv_key)
 
     async def send(self, msg: dict[str, Any]) -> None:
-        await self.stream.write_frame(self._tx.encrypt(encode(msg)))
+        plaintext = encode(msg)
+        # Checked before encrypting: a rejected frame must not consume a nonce.
+        if len(plaintext) + TAG_LEN > MAX_FRAME:
+            raise ProtocolError("bad_frame", f"record of {len(plaintext) + TAG_LEN} bytes exceeds {MAX_FRAME}")
+        await self.stream.write_frame(self._tx.encrypt(plaintext))
 
     async def recv(self) -> dict[str, Any]:
         record = await self.stream.read_frame()
