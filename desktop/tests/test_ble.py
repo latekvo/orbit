@@ -92,6 +92,8 @@ async def test_ble_session_then_upgrade_to_lan(make_daemon, short_tmp, monkeypat
 
     # Advertisement service data: first 8 bytes of the device id. Other prefixes are ignored.
     daemon.on_ble("00" * 8, SimpleNamespace(address="11:11"))
+    await asyncio.sleep(0.05)
+    assert (await api.call("devices.list"))[0]["discovered"] == [] and not FakeGattLink.instances
     daemon.on_ble(dev_id[:16], SimpleNamespace(address="AA:BB:CC:DD:EE:FF"))
     acts = await until(lambda: api.call("activities.list"))
     assert [a["id"] for a in acts] == ["media:x", "pad"]
