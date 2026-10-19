@@ -52,9 +52,15 @@ class OrbitService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        if (intent?.action == ACTION_RESTART_BLE) {
-            stopBle("restarting")
-            startBle()
+        when (intent?.action) {
+            ACTION_RESTART_BLE -> {
+                stopBle("restarting")
+                startBle()
+            }
+            ACTION_RENAME -> nsd?.let { n ->
+                n.stop()
+                tcp?.port?.let { n.start(orbit.deviceName, it, orbit.deviceId) }
+            }
         }
         return START_STICKY
     }
@@ -100,6 +106,7 @@ class OrbitService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1
         const val ACTION_RESTART_BLE = "dev.orbit.companion.RESTART_BLE"
+        const val ACTION_RENAME = "dev.orbit.companion.RENAME"
 
         fun start(context: Context, action: String? = null) {
             context.startForegroundService(Intent(context, OrbitService::class.java).setAction(action))

@@ -9,6 +9,7 @@ import java.net.ServerSocket
 /** LAN transport (spec 1.1): accepts sessions on [PREFERRED_PORT], or any free port if taken. */
 class TcpServer(private val orbit: Orbit) {
     private var server: ServerSocket? = null
+    val port: Int? get() = server?.localPort
     private var thread: Thread? = null
 
     /** Returns the bound port. */

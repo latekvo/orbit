@@ -24,6 +24,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -100,6 +101,8 @@ class MainActivity : ComponentActivity() {
         val peers by orbit.peers.peers.collectAsStateWithLifecycle()
         val activities by orbit.activities.collectAsStateWithLifecycle()
         val connected by orbit.listenerConnected.collectAsStateWithLifecycle()
+        val name by orbit.deviceNameFlow.collectAsStateWithLifecycle()
+        var nameDraft by remember { mutableStateOf(orbit.customName ?: "") }
         var resumeTick by remember { mutableStateOf(0) }
         val owner = LocalLifecycleOwner.current
         DisposableEffect(owner) {
@@ -144,7 +147,20 @@ class MainActivity : ComponentActivity() {
         LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
             item {
                 Text("Orbit", style = MaterialTheme.typography.headlineMedium)
-                Text("${orbit.deviceName} · ${orbit.deviceId}", style = MaterialTheme.typography.bodySmall)
+                Text("$name · ${orbit.deviceId}", style = MaterialTheme.typography.bodySmall)
+            }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    OutlinedTextField(
+                        value = nameDraft,
+                        onValueChange = { nameDraft = it },
+                        label = { Text("Device name") },
+                        placeholder = { Text(DeviceNames.system(this@MainActivity)) },
+                        singleLine = true,
+                        modifier = Modifier.weight(1f),
+                    )
+                    Button(onClick = { orbit.setCustomName(nameDraft) }) { Text("Save") }
+                }
             }
             item {
                 Card(Modifier.fillMaxWidth()) {
