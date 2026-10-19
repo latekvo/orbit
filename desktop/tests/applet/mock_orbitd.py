@@ -54,6 +54,8 @@ def art_key(data: bytes) -> str:
 
 
 PIXEL_8 = device_id_for("Pixel 8")
+PIXEL_9_PRO = device_id_for("Pixel 9 Pro")  # real id; demo lists it provisionally by prefix
+PROVISIONAL_REAL_IDS = {PIXEL_9_PRO[:16]: PIXEL_9_PRO}
 GALAXY_TAB = device_id_for("Galaxy Tab S9")
 WORK_PHONE = device_id_for("Work Phone")
 PIXEL_7A = device_id_for("Pixel 7a")
@@ -362,7 +364,7 @@ class MockOrbitd:
         def dev(name, *, paired, connected, transport, address, discovered):
             return {"id": device_id_for(name), "name": name, "platform": "android",
                     "paired": paired, "connected": connected, "transport": transport,
-                    "address": address, "discovered": discovered}
+                    "address": address, "discovered": discovered, "provisional": False}
 
         self._devices.append(dev("Pixel 8", paired=True, connected=True, transport="lan",
                                  address="192.168.1.20:47820", discovered=["lan", "ble"]))
@@ -378,6 +380,10 @@ class MockOrbitd:
                 address="192.168.1.44:47820", discovered=[]),
             dev("Pixel 7a", paired=False, connected=False, transport=None,
                 address="192.168.1.31:47820", discovered=["lan"]),
+            # Seen only over BLE: listed under its advertised 8-byte id prefix until connected.
+            {"id": PIXEL_9_PRO[:16], "name": "Pixel 9 Pro", "platform": "", "paired": False,
+             "connected": False, "transport": None, "address": None, "discovered": ["ble"],
+             "provisional": True},
         ]
         if pairing_on_start:
             self._pairings.append(self._new_pairing(PIXEL_7A, "Pixel 7a", sas=DEMO_SAS))
@@ -892,7 +898,8 @@ class MockOrbitd:
             def create():
                 dev = {"id": device_id_for(address), "name": f"Phone at {address}",
                        "platform": "android", "paired": False, "connected": True,
-                       "transport": "lan", "address": address, "discovered": []}
+                       "transport": "lan", "address": address, "discovered": [],
+                       "provisional": False}
                 self._devices.append(dev)
                 self._pairings.append(self._new_pairing(dev["id"], dev["name"]))
                 return {"id": dev["id"]}
@@ -904,6 +911,12 @@ class MockOrbitd:
         dev = self._device(device_id)
         if dev is None:
             raise ApiError("not_found", "unknown device")
+        if dev.get("provisional"):
+            # The handshake reveals the real id; the provisional entry is replaced in place, so
+            # one devices.changed both drops the prefix and adds the real id.
+            real = PROVISIONAL_REAL_IDS.get(device_id) or device_id_for(f"provisional:{device_id}")
+            dev.update(id=real, platform="android", provisional=False)
+            device_id = real
         if not dev["connected"]:
             dev["connected"] = True
             dev["transport"] = dev["discovered"][0] if dev["discovered"] else "lan"
