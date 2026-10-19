@@ -1,6 +1,6 @@
 """Render the applet's main states to PNGs against the mock daemon (for visual review).
 
-    uv run python tests/applet/render_screenshots.py OUT_DIR [--platform cocoa|xcb]
+uv run python tests/applet/render_screenshots.py OUT_DIR [--platform cocoa|xcb]
 """
 
 from __future__ import annotations
@@ -17,16 +17,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", type=Path)
-    ap.add_argument("--platform", default="offscreen",
-                    help="QT_QPA_PLATFORM; a native one puts the windows on the real screen")
+    ap.add_argument(
+        "--platform", default="offscreen", help="QT_QPA_PLATFORM; a native one puts the windows on the real screen"
+    )
     args = ap.parse_args()
     if args.platform:
         os.environ["QT_QPA_PLATFORM"] = args.platform
 
+    from mock_orbitd import PIXEL_7A, MockOrbitd
     from PySide6.QtCore import QEventLoop, QTimer
     from PySide6.QtWidgets import QApplication
 
-    from mock_orbitd import PIXEL_7A, MockOrbitd
     from orbit.applet import theme as themes
     from orbit.applet.client import DaemonClient
     from orbit.applet.model import now_ms
@@ -79,8 +80,14 @@ def main() -> None:
                 panel.show_devices()
                 wait(200)
                 save(panel, f"devices-{mode}")
-                pairing = {"session": "s1", "deviceId": PIXEL_7A, "name": "Pixel 7a", "sas": "042917",
-                           "localAccepted": False, "remoteAccepted": True}
+                pairing = {
+                    "session": "s1",
+                    "deviceId": PIXEL_7A,
+                    "name": "Pixel 7a",
+                    "sas": "042917",
+                    "localAccepted": False,
+                    "remoteAccepted": True,
+                }
                 dlg = PairingDialog(client, t, pairing)
                 dlg.show()
                 wait(200)

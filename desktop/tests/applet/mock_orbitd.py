@@ -28,8 +28,9 @@ import sys
 import threading
 import time
 import zlib
+from collections.abc import Callable
 from datetime import datetime
-from typing import Any, Callable
+from typing import Any
 
 log = logging.getLogger("mock_orbitd")
 
@@ -94,7 +95,7 @@ def _hex(c: str) -> tuple[float, float, float]:
 
 
 def _mix(a, b, t):
-    return tuple(x + (y - x) * t for x, y in zip(a, b))
+    return tuple(x + (y - x) * t for x, y in zip(a, b, strict=True))
 
 
 def _cov(d: float) -> float:
@@ -144,8 +145,12 @@ def _sd_pin(x, y, cx, cy, r, tip_y):
 Layer = tuple[Callable[[float, float], float], Callable[[float, float], tuple]]
 
 
-def _render(size: int, background: Callable[[float, float], tuple], layers: list[Layer],
-            clip: Callable[[float, float], float] | None = None) -> bytes:
+def _render(
+    size: int,
+    background: Callable[[float, float], tuple],
+    layers: list[Layer],
+    clip: Callable[[float, float], float] | None = None,
+) -> bytes:
     """Rasterise SDF layers over a background; returns PNG bytes."""
     buf = bytearray(size * size * 4)
     i = 0
@@ -161,8 +166,7 @@ def _render(size: int, background: Callable[[float, float], tuple], layers: list
                     a = c * ca
                     r, g, b = r + (cr - r) * a, g + (cg - g) * a, b + (cb - b) * a
             alpha = _cov(clip(x, y)) if clip else 1.0
-            buf[i : i + 4] = bytes((int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5),
-                                    int(alpha * 255 + 0.5)))
+            buf[i : i + 4] = bytes((int(r * 255 + 0.5), int(g * 255 + 0.5), int(b * 255 + 0.5), int(alpha * 255 + 0.5)))
             i += 4
     return encode_png(size, size, buf)
 
@@ -176,46 +180,68 @@ def _app_icon(bg: str, glyphs: list[tuple[Callable, str]], size: int = 96) -> by
     s = size / 96
     top, bottom = _mix(_hex(bg), (1, 1, 1), 0.12), _mix(_hex(bg), (0, 0, 0), 0.08)
     layers = [(lambda x, y, f=f: f(x / s, y / s) * s, _solid(c)) for f, c in glyphs]
-    return _render(size, lambda x, y: _mix(top, bottom, y / size), layers,
-                   clip=lambda x, y: _sd_circle(x, y, size / 2, size / 2, size / 2 - 0.5))
+    return _render(
+        size,
+        lambda x, y: _mix(top, bottom, y / size),
+        layers,
+        clip=lambda x, y: _sd_circle(x, y, size / 2, size / 2, size / 2 - 0.5),
+    )
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def app_icons() -> dict[str, bytes]:
     c = 48
     return {
-        "spotify": _app_icon("#1db954", [
-            (lambda x, y: _sd_arc(x, y, c, 76, 40, 9, 0.72), "#191414"),
-            (lambda x, y: _sd_arc(x, y, c, 80, 32, 7.5, 0.70), "#191414"),
-            (lambda x, y: _sd_arc(x, y, c, 84, 25, 6, 0.66), "#191414"),
-        ]),
-        "chrome": _app_icon("#4285f4", [
-            (lambda x, y: _sd_ring(x, y, c, c, 24, 8), "#ffffff"),
-            (lambda x, y: _sd_circle(x, y, c, c, 11), "#ffffff"),
-        ]),
-        "clock": _app_icon("#fb8c00", [
-            (lambda x, y: _sd_ring(x, y, c, c, 27, 6), "#ffffff"),
-            (lambda x, y: _sd_segment(x, y, c, c, c, 29, 3), "#ffffff"),
-            (lambda x, y: _sd_segment(x, y, c, c, 62, 56, 3), "#ffffff"),
-            (lambda x, y: _sd_circle(x, y, c, c, 5), "#ffffff"),
-        ]),
-        "messages": _app_icon("#7e57c2", [
-            (lambda x, y: _sd_round_box(x, y, c, 44, 25, 18, 11), "#ffffff"),
-            (lambda x, y: _sd_segment(x, y, 38, 58, 31, 69, 4), "#ffffff"),
-            (lambda x, y: _sd_circle(x, y, 37, 44, 3.6), "#7e57c2"),
-            (lambda x, y: _sd_circle(x, y, 48, 44, 3.6), "#7e57c2"),
-            (lambda x, y: _sd_circle(x, y, 59, 44, 3.6), "#7e57c2"),
-        ]),
-        "maps": _app_icon("#ffffff", [
-            (lambda x, y: _sd_pin(x, y, c, 40, 19, 76), "#ea4335"),
-            (lambda x, y: _sd_circle(x, y, c, 40, 7.5), "#ffffff"),
-        ]),
-        "photos": _app_icon("#ffffff", [
-            (lambda x, y: _sd_circle(x, y, 39, 39, 13), "#ea4335"),
-            (lambda x, y: _sd_circle(x, y, 57, 39, 13), "#fbbc04"),
-            (lambda x, y: _sd_circle(x, y, 57, 57, 13), "#34a853"),
-            (lambda x, y: _sd_circle(x, y, 39, 57, 13), "#4285f4"),
-        ]),
+        "spotify": _app_icon(
+            "#1db954",
+            [
+                (lambda x, y: _sd_arc(x, y, c, 76, 40, 9, 0.72), "#191414"),
+                (lambda x, y: _sd_arc(x, y, c, 80, 32, 7.5, 0.70), "#191414"),
+                (lambda x, y: _sd_arc(x, y, c, 84, 25, 6, 0.66), "#191414"),
+            ],
+        ),
+        "chrome": _app_icon(
+            "#4285f4",
+            [
+                (lambda x, y: _sd_ring(x, y, c, c, 24, 8), "#ffffff"),
+                (lambda x, y: _sd_circle(x, y, c, c, 11), "#ffffff"),
+            ],
+        ),
+        "clock": _app_icon(
+            "#fb8c00",
+            [
+                (lambda x, y: _sd_ring(x, y, c, c, 27, 6), "#ffffff"),
+                (lambda x, y: _sd_segment(x, y, c, c, c, 29, 3), "#ffffff"),
+                (lambda x, y: _sd_segment(x, y, c, c, 62, 56, 3), "#ffffff"),
+                (lambda x, y: _sd_circle(x, y, c, c, 5), "#ffffff"),
+            ],
+        ),
+        "messages": _app_icon(
+            "#7e57c2",
+            [
+                (lambda x, y: _sd_round_box(x, y, c, 44, 25, 18, 11), "#ffffff"),
+                (lambda x, y: _sd_segment(x, y, 38, 58, 31, 69, 4), "#ffffff"),
+                (lambda x, y: _sd_circle(x, y, 37, 44, 3.6), "#7e57c2"),
+                (lambda x, y: _sd_circle(x, y, 48, 44, 3.6), "#7e57c2"),
+                (lambda x, y: _sd_circle(x, y, 59, 44, 3.6), "#7e57c2"),
+            ],
+        ),
+        "maps": _app_icon(
+            "#ffffff",
+            [
+                (lambda x, y: _sd_pin(x, y, c, 40, 19, 76), "#ea4335"),
+                (lambda x, y: _sd_circle(x, y, c, 40, 7.5), "#ffffff"),
+            ],
+        ),
+        "photos": _app_icon(
+            "#ffffff",
+            [
+                (lambda x, y: _sd_circle(x, y, 39, 39, 13), "#ea4335"),
+                (lambda x, y: _sd_circle(x, y, 57, 39, 13), "#fbbc04"),
+                (lambda x, y: _sd_circle(x, y, 57, 57, 13), "#34a853"),
+                (lambda x, y: _sd_circle(x, y, 39, 57, 13), "#4285f4"),
+            ],
+        ),
     }
 
 
@@ -228,16 +254,23 @@ def _album_art(corners: tuple[str, str, str, str], shapes: list, size: int = 192
             cx, cy, r, c1, c2 = args
             a, b = _hex(c1), _hex(c2)
             cy0, cy1 = (cy - r) * size, (cy + r) * size
-            layers.append((
-                lambda x, y, cx=cx * size, cy=cy * size, r=r * size: _sd_circle(x, y, cx, cy, r),
-                lambda x, y, a=a, b=b, cy0=cy0, cy1=cy1: (*_mix(a, b, min(1, max(0, (y - cy0) / (cy1 - cy0)))), 1.0),
-            ))
+            layers.append(
+                (
+                    lambda x, y, cx=cx * size, cy=cy * size, r=r * size: _sd_circle(x, y, cx, cy, r),
+                    lambda x, y, a=a, b=b, cy0=cy0, cy1=cy1: (
+                        *_mix(a, b, min(1, max(0, (y - cy0) / (cy1 - cy0)))),
+                        1.0,
+                    ),
+                )
+            )
         elif kind == "ring":
             cx, cy, r, w, col, alpha = args
-            layers.append((
-                lambda x, y, cx=cx * size, cy=cy * size, r=r * size, w=w * size: _sd_ring(x, y, cx, cy, r, w),
-                _solid(col, alpha),
-            ))
+            layers.append(
+                (
+                    lambda x, y, cx=cx * size, cy=cy * size, r=r * size, w=w * size: _sd_ring(x, y, cx, cy, r, w),
+                    _solid(col, alpha),
+                )
+            )
 
     def background(x, y):
         u, v = x / size, y / size
@@ -249,34 +282,55 @@ def _album_art(corners: tuple[str, str, str, str], shapes: list, size: int = 192
 
 
 TRACKS = [
-    {"title": "Golden Hour Drive", "artist": "Luna Vale", "album": "Coastal Static",
-     "durationMs": 215000,
-     "art": (("#ff9a56", "#ff5e8a", "#7b3fa0", "#2b1b5c"), [
-         ("disc", 0.5, 0.56, 0.24, "#ffe08a", "#ff7a59"),
-         ("ring", 0.5, 0.56, 0.32, 0.012, "#ffffff", 0.55),
-         ("ring", 0.5, 0.56, 0.40, 0.008, "#ffffff", 0.35),
-         ("ring", 0.5, 0.56, 0.48, 0.005, "#ffffff", 0.2),
-     ])},
-    {"title": "Northern Signals", "artist": "Echo Avenue", "album": "Polar Bloom",
-     "durationMs": 198000,
-     "art": (("#0f2b46", "#1c7c7d", "#3a1f63", "#38d9a9"), [
-         ("ring", 0.32, 0.36, 0.20, 0.05, "#7ef0c8", 0.85),
-         ("ring", 0.62, 0.62, 0.26, 0.035, "#9fb8ff", 0.7),
-         ("disc", 0.62, 0.62, 0.11, "#e0fff4", "#6bd6ff"),
-     ])},
-    {"title": "Paper Satellites", "artist": "Mira Sol", "album": "Small Orbits",
-     "durationMs": 243000,
-     "art": (("#ffd1e8", "#b8a4ff", "#7fd3ff", "#4d6bff"), [
-         ("ring", 0.5, 0.5, 0.34, 0.01, "#ffffff", 0.8),
-         ("ring", 0.5, 0.5, 0.21, 0.01, "#ffffff", 0.6),
-         ("disc", 0.5, 0.5, 0.12, "#ffb36b", "#ff5f7e"),
-         ("disc", 0.79, 0.30, 0.05, "#ffffff", "#c7d8ff"),
-         ("disc", 0.33, 0.66, 0.035, "#fff3a6", "#ffc94d"),
-     ])},
+    {
+        "title": "Golden Hour Drive",
+        "artist": "Luna Vale",
+        "album": "Coastal Static",
+        "durationMs": 215000,
+        "art": (
+            ("#ff9a56", "#ff5e8a", "#7b3fa0", "#2b1b5c"),
+            [
+                ("disc", 0.5, 0.56, 0.24, "#ffe08a", "#ff7a59"),
+                ("ring", 0.5, 0.56, 0.32, 0.012, "#ffffff", 0.55),
+                ("ring", 0.5, 0.56, 0.40, 0.008, "#ffffff", 0.35),
+                ("ring", 0.5, 0.56, 0.48, 0.005, "#ffffff", 0.2),
+            ],
+        ),
+    },
+    {
+        "title": "Northern Signals",
+        "artist": "Echo Avenue",
+        "album": "Polar Bloom",
+        "durationMs": 198000,
+        "art": (
+            ("#0f2b46", "#1c7c7d", "#3a1f63", "#38d9a9"),
+            [
+                ("ring", 0.32, 0.36, 0.20, 0.05, "#7ef0c8", 0.85),
+                ("ring", 0.62, 0.62, 0.26, 0.035, "#9fb8ff", 0.7),
+                ("disc", 0.62, 0.62, 0.11, "#e0fff4", "#6bd6ff"),
+            ],
+        ),
+    },
+    {
+        "title": "Paper Satellites",
+        "artist": "Mira Sol",
+        "album": "Small Orbits",
+        "durationMs": 243000,
+        "art": (
+            ("#ffd1e8", "#b8a4ff", "#7fd3ff", "#4d6bff"),
+            [
+                ("ring", 0.5, 0.5, 0.34, 0.01, "#ffffff", 0.8),
+                ("ring", 0.5, 0.5, 0.21, 0.01, "#ffffff", 0.6),
+                ("disc", 0.5, 0.5, 0.12, "#ffb36b", "#ff5f7e"),
+                ("disc", 0.79, 0.30, 0.05, "#ffffff", "#c7d8ff"),
+                ("disc", 0.33, 0.66, 0.035, "#fff3a6", "#ffc94d"),
+            ],
+        ),
+    },
 ]
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def album_arts() -> tuple[bytes, ...]:
     return tuple(_album_art(*t["art"]) for t in TRACKS)
 
@@ -327,8 +381,15 @@ def _act(label: str, icon: str, id: str, **extra) -> dict:
 
 
 class MockOrbitd:
-    def __init__(self, socket_path: str, *, scenario: str = "demo", evolve: bool = True,
-                 tick_s: float = 1.0, pairing_on_start: bool = False):
+    def __init__(
+        self,
+        socket_path: str,
+        *,
+        scenario: str = "demo",
+        evolve: bool = True,
+        tick_s: float = 1.0,
+        pairing_on_start: bool = False,
+    ):
         if scenario not in ("demo", "empty", "idle", "crowded"):
             raise ValueError(f"unknown scenario {scenario!r} (expected demo, empty, idle or crowded)")
         self.socket_path = socket_path
@@ -362,28 +423,58 @@ class MockOrbitd:
 
     def _build_scenario(self, scenario: str, pairing_on_start: bool) -> None:
         def dev(name, *, paired, connected, transport, address, discovered):
-            return {"id": device_id_for(name), "name": name, "platform": "android",
-                    "paired": paired, "connected": connected, "transport": transport,
-                    "address": address, "discovered": discovered, "provisional": False}
+            return {
+                "id": device_id_for(name),
+                "name": name,
+                "platform": "android",
+                "paired": paired,
+                "connected": connected,
+                "transport": transport,
+                "address": address,
+                "discovered": discovered,
+                "provisional": False,
+            }
 
-        self._devices.append(dev("Pixel 8", paired=True, connected=True, transport="lan",
-                                 address="192.168.1.20:47820", discovered=["lan", "ble"]))
+        self._devices.append(
+            dev(
+                "Pixel 8",
+                paired=True,
+                connected=True,
+                transport="lan",
+                address="192.168.1.20:47820",
+                discovered=["lan", "ble"],
+            )
+        )
         if scenario == "idle":
             return
         if scenario == "crowded":
             self._build_crowded()
             return
         self._devices += [
-            dev("Galaxy Tab S9", paired=True, connected=True, transport="ble", address=None,
-                discovered=["ble"]),
-            dev("Work Phone", paired=True, connected=False, transport=None,
-                address="192.168.1.44:47820", discovered=[]),
-            dev("Pixel 7a", paired=False, connected=False, transport=None,
-                address="192.168.1.31:47820", discovered=["lan"]),
+            dev("Galaxy Tab S9", paired=True, connected=True, transport="ble", address=None, discovered=["ble"]),
+            dev(
+                "Work Phone", paired=True, connected=False, transport=None, address="192.168.1.44:47820", discovered=[]
+            ),
+            dev(
+                "Pixel 7a",
+                paired=False,
+                connected=False,
+                transport=None,
+                address="192.168.1.31:47820",
+                discovered=["lan"],
+            ),
             # Seen only over BLE: listed under its advertised 8-byte id prefix until connected.
-            {"id": PIXEL_9_PRO[:16], "name": "Pixel 9 Pro", "platform": "", "paired": False,
-             "connected": False, "transport": None, "address": None, "discovered": ["ble"],
-             "provisional": True},
+            {
+                "id": PIXEL_9_PRO[:16],
+                "name": "Pixel 9 Pro",
+                "platform": "",
+                "paired": False,
+                "connected": False,
+                "transport": None,
+                "address": None,
+                "discovered": ["ble"],
+                "provisional": True,
+            },
         ]
         if pairing_on_start:
             self._pairings.append(self._new_pairing(PIXEL_7A, "Pixel 7a", sas=DEMO_SAS))
@@ -393,24 +484,38 @@ class MockOrbitd:
         now = now_ms()
 
         media = {
-            "device": PIXEL_8, "id": SPOTIFY, "kind": "media",
+            "device": PIXEL_8,
+            "id": SPOTIFY,
+            "kind": "media",
             "app": {"id": "com.spotify.music", "name": "Spotify"},
-            "iconKey": icons["spotify"], "color": "#1db954",
-            "media": {"state": "playing", "positionMs": 61000, "positionAtMs": now,
-                      "durationMs": 0, "rate": 1.0, "seekable": True},
-            "actions": [_act("Previous", "previous", "media.previous"),
-                        _act("Pause", "pause", "media.pause"),
-                        _act("Next", "next", "media.next"),
-                        _act("Like", "like", "notif.0")],
+            "iconKey": icons["spotify"],
+            "color": "#1db954",
+            "media": {
+                "state": "playing",
+                "positionMs": 61000,
+                "positionAtMs": now,
+                "durationMs": 0,
+                "rate": 1.0,
+                "seekable": True,
+            },
+            "actions": [
+                _act("Previous", "previous", "media.previous"),
+                _act("Pause", "pause", "media.pause"),
+                _act("Next", "next", "media.next"),
+                _act("Like", "like", "notif.0"),
+            ],
             "updatedMs": now,
         }
         self._extra[(PIXEL_8, SPOTIFY)] = {"role": "playlist", "index": 0}
         self._load_track(media, 0, now, position=61000)
 
         download = {
-            "device": PIXEL_8, "id": DOWNLOAD, "kind": "progress",
+            "device": PIXEL_8,
+            "id": DOWNLOAD,
+            "kind": "progress",
             "app": {"id": "com.android.chrome", "name": "Chrome"},
-            "iconKey": icons["chrome"], "color": "#4285f4",
+            "iconKey": icons["chrome"],
+            "color": "#4285f4",
             "progress": {"value": 21, "max": 100, "indeterminate": False},
             "actions": [_act("Pause", "pause", "notif.0"), _act("Cancel", "close", "notif.1")],
             "updatedMs": now,
@@ -419,33 +524,50 @@ class MockOrbitd:
         self._describe_download(download)
 
         timer = {
-            "device": PIXEL_8, "id": TIMER, "kind": "timer",
+            "device": PIXEL_8,
+            "id": TIMER,
+            "kind": "timer",
             "app": {"id": "com.google.android.deskclock", "name": "Clock"},
-            "title": "Pasta", "subtitle": "Timer",
-            "iconKey": icons["clock"], "color": "#fb8c00",
+            "title": "Pasta",
+            "subtitle": "Timer",
+            "iconKey": icons["clock"],
+            "color": "#fb8c00",
             "chrono": {"baseMs": now + 450_000, "countDown": True, "running": True},
-            "actions": [_act("Pause", "pause", "notif.0"), _act("+1 min", "add", "notif.1"),
-                        _act("Stop", "stop", "notif.2")],
+            "actions": [
+                _act("Pause", "pause", "notif.0"),
+                _act("+1 min", "add", "notif.1"),
+                _act("Stop", "stop", "notif.2"),
+            ],
             "updatedMs": now,
         }
         self._extra[(PIXEL_8, TIMER)] = {"role": "timer"}
 
         message = {
-            "device": PIXEL_8, "id": MESSAGE, "kind": "generic",
+            "device": PIXEL_8,
+            "id": MESSAGE,
+            "kind": "generic",
             "app": {"id": "com.google.android.apps.messaging", "name": "Messages"},
-            "title": "Alice", "text": "Are we still on for 7? I can bring the board games",
-            "iconKey": icons["messages"], "color": "#7e57c2",
-            "actions": [_act("Reply", "reply", "notif.0", input={"kind": "text", "label": "Reply"}),
-                        _act("Mark as read", "check", "notif.1")],
+            "title": "Alice",
+            "text": "Are we still on for 7? I can bring the board games",
+            "iconKey": icons["messages"],
+            "color": "#7e57c2",
+            "actions": [
+                _act("Reply", "reply", "notif.0", input={"kind": "text", "label": "Reply"}),
+                _act("Mark as read", "check", "notif.1"),
+            ],
             "updatedMs": now,
         }
         self._extra[(PIXEL_8, MESSAGE)] = {"role": "message"}
 
         backup = {
-            "device": PIXEL_8, "id": BACKUP, "kind": "progress",
+            "device": PIXEL_8,
+            "id": BACKUP,
+            "kind": "progress",
             "app": {"id": "com.google.android.apps.photos", "name": "Google Photos"},
-            "title": "Backing up 23 photos", "subtitle": "Backup",
-            "iconKey": icons["photos"], "color": "#fbbc04",
+            "title": "Backing up 23 photos",
+            "subtitle": "Backup",
+            "iconKey": icons["photos"],
+            "color": "#fbbc04",
             "progress": {"value": 0, "max": 100, "indeterminate": True},
             "actions": [_act("Cancel", "close", "notif.0")],
             "updatedMs": now,
@@ -453,15 +575,17 @@ class MockOrbitd:
         self._extra[(PIXEL_8, BACKUP)] = {"role": "dismissable"}
 
         navigation = {
-            "device": GALAXY_TAB, "id": NAVIGATION, "kind": "navigation",
+            "device": GALAXY_TAB,
+            "id": NAVIGATION,
+            "kind": "navigation",
             "app": {"id": "com.google.android.apps.maps", "name": "Google Maps"},
-            "iconKey": icons["maps"], "color": "#1a73e8",
+            "iconKey": icons["maps"],
+            "color": "#1a73e8",
             "chrono": {"baseMs": now + 12 * 60_000, "countDown": True, "running": True},
             "actions": [_act("Exit", "close", "notif.0")],
             "updatedMs": now,
         }
-        self._extra[(GALAXY_TAB, NAVIGATION)] = {"role": "navigation", "step": 0,
-                                                 "remaining": NAV_STEPS[0][1]}
+        self._extra[(GALAXY_TAB, NAVIGATION)] = {"role": "navigation", "step": 0, "remaining": NAV_STEPS[0][1]}
         self._describe_navigation(navigation, now)
 
         self._acts = [media, download, timer, message, backup, navigation]
@@ -472,16 +596,27 @@ class MockOrbitd:
         self._album_keys = [self.add_art(data) for data in album_arts()]
         now = now_ms()
         media = {
-            "device": PIXEL_8, "id": "media:com.metrolist.music", "kind": "media",
+            "device": PIXEL_8,
+            "id": "media:com.metrolist.music",
+            "kind": "media",
             "app": {"id": "com.metrolist.music", "name": "Metrolist"},
             "title": "Sweater Weather (Extended Live Version Recorded at the Hollywood Bowl) [Remastered]",
             "subtitle": "The Neighbourhood, Featuring An Unreasonably Long List Of Guest Artists",
-            "iconKey": icons["spotify"], "artKey": self._album_keys[1],
-            "media": {"state": "playing", "positionMs": 26603, "positionAtMs": now,
-                      "durationMs": 252401, "rate": 1.0, "seekable": True},
+            "iconKey": icons["spotify"],
+            "artKey": self._album_keys[1],
+            "media": {
+                "state": "playing",
+                "positionMs": 26603,
+                "positionAtMs": now,
+                "durationMs": 252401,
+                "rate": 1.0,
+                "seekable": True,
+            },
             "actions": [
-                _act("Previous", "previous", "media.previous"), _act("Pause", "pause", "media.pause"),
-                _act("Next", "next", "media.next"), _act("Stop", "stop", "media.stop"),
+                _act("Previous", "previous", "media.previous"),
+                _act("Pause", "pause", "media.pause"),
+                _act("Next", "next", "media.next"),
+                _act("Stop", "stop", "media.stop"),
                 {"id": "media.custom.TOGGLE_LIKE", "label": "Remove like"},
                 _act("Repeat mode off", "repeat", "media.custom.TOGGLE_REPEAT_MODE"),
                 _act("Shuffle on", "shuffle", "media.custom.TOGGLE_SHUFFLE"),
@@ -492,27 +627,52 @@ class MockOrbitd:
             "updatedMs": now,
         }
         chat = {
-            "device": PIXEL_8, "id": "notif:com.whatsapp:group", "kind": "generic",
+            "device": PIXEL_8,
+            "id": "notif:com.whatsapp:group",
+            "kind": "generic",
             "app": {"id": "com.whatsapp", "name": "WhatsApp Messenger For Very Small Businesses"},
             "title": "Weekend hiking trip planning committee (official, please read the pinned message)",
             "subtitle": "Bartholomew-Alexander Montgomery-Smithington",
             "text": "Here is the route: https://maps.example.com/routes/very-long-route-identifier-"
-                    "0123456789abcdef0123456789abcdef0123456789abcdef and bring water.",
-            "iconKey": icons["messages"], "color": "#25d366",
-            "actions": [{"id": f"notif.{i}", "label": label} for i, label in enumerate([
-                "Mark as read", "Mute conversation for 8 hours", "Archive this chat",
-                "Call back now", "Block and report this sender", "Snooze for one hour"])]
-            + [{"id": "notif.6", "label": "Reply", "icon": "reply",
-                "input": {"kind": "text", "label": "Reply to the group"}}],
+            "0123456789abcdef0123456789abcdef0123456789abcdef and bring water.",
+            "iconKey": icons["messages"],
+            "color": "#25d366",
+            "actions": [
+                {"id": f"notif.{i}", "label": label}
+                for i, label in enumerate(
+                    [
+                        "Mark as read",
+                        "Mute conversation for 8 hours",
+                        "Archive this chat",
+                        "Call back now",
+                        "Block and report this sender",
+                        "Snooze for one hour",
+                    ]
+                )
+            ]
+            + [
+                {
+                    "id": "notif.6",
+                    "label": "Reply",
+                    "icon": "reply",
+                    "input": {"kind": "text", "label": "Reply to the group"},
+                }
+            ],
             "updatedMs": now,
         }
         download = {
-            "device": PIXEL_8, "id": "notif:com.android.chrome:bigdownload", "kind": "progress",
-            "app": {"id": "com.android.chrome", "name": "Chrome"}, "iconKey": icons["chrome"],
+            "device": PIXEL_8,
+            "id": "notif:com.android.chrome:bigdownload",
+            "kind": "progress",
+            "app": {"id": "com.android.chrome", "name": "Chrome"},
+            "iconKey": icons["chrome"],
             "title": "Downloading a-file-with-an-absurdly-long-name-that-never-ends-v2.0.1-final-FINAL.zip",
-            "subtitle": "1.2 GB of 5.7 GB", "progress": {"value": 21, "max": 100, "indeterminate": False},
-            "actions": [{"id": "notif.0", "label": "Pause download", "icon": "pause"},
-                        {"id": "notif.1", "label": "Cancel download", "icon": "close"}],
+            "subtitle": "1.2 GB of 5.7 GB",
+            "progress": {"value": 21, "max": 100, "indeterminate": False},
+            "actions": [
+                {"id": "notif.0", "label": "Pause download", "icon": "pause"},
+                {"id": "notif.1", "label": "Cancel download", "icon": "close"},
+            ],
             "updatedMs": now,
         }
         self._acts = [media, chat, download]
@@ -520,8 +680,11 @@ class MockOrbitd:
     @staticmethod
     def _toggle_custom(act: dict, action_id: str) -> None:
         """Relabel Metrolist-style toggles the way the real app does."""
-        cycles = {"TOGGLE_LIKE": ["Like", "Remove like"], "TOGGLE_SHUFFLE": ["Shuffle off", "Shuffle on"],
-                  "TOGGLE_REPEAT_MODE": ["Repeat mode off", "Repeat mode one", "Repeat mode all"]}
+        cycles = {
+            "TOGGLE_LIKE": ["Like", "Remove like"],
+            "TOGGLE_SHUFFLE": ["Shuffle off", "Shuffle on"],
+            "TOGGLE_REPEAT_MODE": ["Repeat mode off", "Repeat mode one", "Repeat mode all"],
+        }
         cycle = cycles.get(action_id.removeprefix("media.custom."))
         for a in act.get("actions", []):
             if cycle and a.get("id") == action_id:
@@ -529,15 +692,19 @@ class MockOrbitd:
                 a["label"] = cycle[(i + 1) % len(cycle)]
 
     def _new_pairing(self, device_id: str, name: str, sas: str | None = None) -> dict:
-        return {"session": secrets.token_hex(8), "deviceId": device_id, "name": name,
-                "sas": sas or f"{secrets.randbelow(10**6):06d}",
-                "localAccepted": False, "remoteAccepted": True}
+        return {
+            "session": secrets.token_hex(8),
+            "deviceId": device_id,
+            "name": name,
+            "sas": sas or f"{secrets.randbelow(10**6):06d}",
+            "localAccepted": False,
+            "remoteAccepted": True,
+        }
 
     def _load_track(self, act: dict, index: int, now: int, position: int = 0) -> None:
         track = TRACKS[index]
         self._extra[(act["device"], act["id"])]["index"] = index
-        act.update(title=track["title"], subtitle=track["artist"], text=track["album"],
-                   artKey=self._album_keys[index])
+        act.update(title=track["title"], subtitle=track["artist"], text=track["album"], artKey=self._album_keys[index])
         act["media"].update(positionMs=position, positionAtMs=now, durationMs=track["durationMs"])
 
     def _describe_download(self, act: dict) -> None:
@@ -569,16 +736,16 @@ class MockOrbitd:
         return [a for a in self._acts if a["device"] not in hidden]
 
     def _find_act(self, device_id: str, activity_id: str) -> dict | None:
-        return next((a for a in self._acts
-                     if a["device"] == device_id and a["id"] == activity_id), None)
+        return next((a for a in self._acts if a["device"] == device_id and a["id"] == activity_id), None)
 
     def _remove_act(self, act: dict) -> None:
         self._acts.remove(act)
         self._extra.pop((act["device"], act["id"]), None)
 
     def _snapshot(self) -> dict[str, Any]:
-        return copy.deepcopy({"devices": self._devices, "pairing": self._pairings,
-                              "activities": self._visible_activities()})
+        return copy.deepcopy(
+            {"devices": self._devices, "pairing": self._pairings, "activities": self._visible_activities()}
+        )
 
     def _event(self, name: str, snap: dict) -> dict:
         key = {"devices": "devices", "pairing": "pairings", "activities": "activities"}[name]
@@ -616,8 +783,7 @@ class MockOrbitd:
 
     def actions(self) -> list[dict]:
         with self._rec_lock:
-            return [copy.deepcopy(r["params"]) for r in self._requests
-                    if r["method"] == "activities.action"]
+            return [copy.deepcopy(r["params"]) for r in self._requests if r["method"] == "activities.action"]
 
     def clear_recorded(self) -> None:
         with self._rec_lock:
@@ -642,8 +808,7 @@ class MockOrbitd:
 
     def set_devices(self, devices: list[dict]) -> None:
         devices = copy.deepcopy(devices)
-        self._on_loop(lambda: self._mutate(lambda: setattr(self, "_devices", devices),
-                                           force=("devices",)))
+        self._on_loop(lambda: self._mutate(lambda: setattr(self, "_devices", devices), force=("devices",)))
 
     def set_activities(self, activities: list[dict]) -> None:
         """Replace all activities; scenario behaviours are dropped (generic handling only)."""
@@ -657,8 +822,7 @@ class MockOrbitd:
 
     def set_pairings(self, pairings: list[dict]) -> None:
         pairings = copy.deepcopy(pairings)
-        self._on_loop(lambda: self._mutate(lambda: setattr(self, "_pairings", pairings),
-                                           force=("pairing",)))
+        self._on_loop(lambda: self._mutate(lambda: setattr(self, "_pairings", pairings), force=("pairing",)))
 
     def update_activity(self, device: str, activity_id: str, **fields) -> None:
         fields = copy.deepcopy(fields)
@@ -687,11 +851,11 @@ class MockOrbitd:
         if len(encoded) > AF_UNIX_PATH_MAX:
             raise ValueError(
                 f"socket path is {len(encoded)} bytes, over the AF_UNIX limit of "
-                f"{AF_UNIX_PATH_MAX} bytes on this platform: {self.socket_path}")
+                f"{AF_UNIX_PATH_MAX} bytes on this platform: {self.socket_path}"
+            )
         ready = threading.Event()
         errors: list[BaseException] = []
-        self._thread = threading.Thread(target=self._thread_main, args=(ready, errors),
-                                        name="mock-orbitd", daemon=True)
+        self._thread = threading.Thread(target=self._thread_main, args=(ready, errors), name="mock-orbitd", daemon=True)
         self._thread.start()
         if not ready.wait(10):
             raise RuntimeError("mock orbitd did not start listening within 10 s")
@@ -721,7 +885,7 @@ class MockOrbitd:
     async def _serve(self, ready: threading.Event, errors: list) -> None:
         path = self.socket_path
         try:
-            os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)
+            os.makedirs(os.path.dirname(os.path.abspath(path)), mode=0o700, exist_ok=True)  # noqa: ASYNC240
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -756,7 +920,7 @@ class MockOrbitd:
                 await asyncio.wait(pending, timeout=1)
         try:
             await asyncio.wait_for(server.wait_closed(), 2)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             pass
         try:
             st = os.stat(path)
@@ -811,8 +975,7 @@ class MockOrbitd:
         if method == "activities.action":
             fail, self.fail_next_action = self.fail_next_action, None
             if self.action_delay_s > 0:
-                task = asyncio.create_task(self._answer(conn, req_id, method, params, fail,
-                                                        self.action_delay_s))
+                task = asyncio.create_task(self._answer(conn, req_id, method, params, fail, self.action_delay_s))
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
                 return
@@ -896,10 +1059,17 @@ class MockOrbitd:
                 return self._mutate(lambda: self._connect_id(existing["id"]))
 
             def create():
-                dev = {"id": device_id_for(address), "name": f"Phone at {address}",
-                       "platform": "android", "paired": False, "connected": True,
-                       "transport": "lan", "address": address, "discovered": [],
-                       "provisional": False}
+                dev = {
+                    "id": device_id_for(address),
+                    "name": f"Phone at {address}",
+                    "platform": "android",
+                    "paired": False,
+                    "connected": True,
+                    "transport": "lan",
+                    "address": address,
+                    "discovered": [],
+                    "provisional": False,
+                }
                 self._devices.append(dev)
                 self._pairings.append(self._new_pairing(dev["id"], dev["name"]))
                 return {"id": dev["id"]}
@@ -1005,8 +1175,7 @@ class MockOrbitd:
             spec = next((a for a in act.get("actions", []) if a.get("id") == action_id), None)
             if spec is None:
                 return {"ok": False, "error": "unsupported action"}
-            if (spec.get("input") or {}).get("kind") == "text" and not (
-                    isinstance(value, str) and value.strip()):
+            if (spec.get("input") or {}).get("kind") == "text" and not (isinstance(value, str) and value.strip()):
                 return {"ok": False, "error": "missing text"}
         self._mutate(lambda: self._perform(act, action_id, value))
         return {"ok": True}
@@ -1084,8 +1253,11 @@ class MockOrbitd:
         elif role == "download":
             if action_id == "notif.0":
                 extra["paused"] = not extra["paused"]
-                self._swap_action(act, "notif.0", _act("Resume", "play", "notif.0")
-                                  if extra["paused"] else _act("Pause", "pause", "notif.0"))
+                self._swap_action(
+                    act,
+                    "notif.0",
+                    _act("Resume", "play", "notif.0") if extra["paused"] else _act("Pause", "pause", "notif.0"),
+                )
                 self._describe_download(act)
             elif action_id == "notif.1":
                 self._remove_act(act)
@@ -1180,11 +1352,15 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--no-evolve", dest="evolve", action="store_false")
     parser.add_argument("--tick", type=float, default=1.0, metavar="SECONDS")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, stream=sys.stderr,
-                        format="%(asctime)s %(name)s %(levelname)s %(message)s")
+    logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
-    mock = MockOrbitd(args.socket, scenario=args.scenario, evolve=args.evolve,
-                      tick_s=args.tick, pairing_on_start=args.pairing_on_start)
+    mock = MockOrbitd(
+        args.socket,
+        scenario=args.scenario,
+        evolve=args.evolve,
+        tick_s=args.tick,
+        pairing_on_start=args.pairing_on_start,
+    )
     mock.on_request = lambda r: print(json.dumps(r), flush=True)
     done = threading.Event()
     for sig in (signal.SIGINT, signal.SIGTERM):

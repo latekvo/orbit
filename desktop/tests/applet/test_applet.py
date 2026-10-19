@@ -1,9 +1,8 @@
-
 import pytest
+from applet_helpers import make_mock
 from PySide6.QtCore import QPoint, QRect, QSize, Qt
 from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QSlider, QToolButton
 
-from applet_helpers import make_mock
 from orbit.applet import model
 from orbit.applet.cards import ActivityCard
 from orbit.applet.client import DaemonClient
@@ -43,8 +42,13 @@ def test_parse_host_port():
 
 def test_default_socket_path():
     assert str(model.default_socket_path({"ORBIT_SOCKET": "/x.sock"}, "linux")) == "/x.sock"
-    assert str(model.default_socket_path({"HOME": "/h"}, "darwin")) == "/h/Library/Application Support/orbit/orbitd.sock"
-    assert str(model.default_socket_path({"HOME": "/h", "XDG_RUNTIME_DIR": "/run/u"}, "linux")) == "/run/u/orbit/orbitd.sock"
+    assert (
+        str(model.default_socket_path({"HOME": "/h"}, "darwin")) == "/h/Library/Application Support/orbit/orbitd.sock"
+    )
+    assert (
+        str(model.default_socket_path({"HOME": "/h", "XDG_RUNTIME_DIR": "/run/u"}, "linux"))
+        == "/run/u/orbit/orbitd.sock"
+    )
     assert str(model.default_socket_path({"HOME": "/h"}, "linux")) == "/h/.local/state/orbit/orbitd.sock"
 
 
@@ -155,7 +159,9 @@ def test_text_action_buttons_send_their_ids(qtbot, client, mock):
     assert btn.text() == plus["label"]
     mock.clear_recorded()
     qtbot.mouseClick(btn, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: mock.actions() == [{"device": timer["device"], "activity": timer["id"], "action": plus["id"]}])
+    qtbot.waitUntil(
+        lambda: mock.actions() == [{"device": timer["device"], "activity": timer["id"], "action": plus["id"]}]
+    )
 
 
 def test_seek_click_sends_position_at_click(qtbot, client, mock):
@@ -185,8 +191,9 @@ def test_seek_drag_release_sends_exact_value(qtbot, client, mock):
     assert mock.actions() == []
     card.seek.setSliderDown(False)
     qtbot.waitUntil(lambda: len(mock.actions()) == 1)
-    assert mock.actions() == [{"device": media["device"], "activity": media["id"], "action": "media.seek",
-                               "value": 123456}]
+    assert mock.actions() == [
+        {"device": media["device"], "activity": media["id"], "action": "media.seek", "value": 123456}
+    ]
     qtbot.waitUntil(lambda: activity(mock, "media")["media"]["positionMs"] == 123456)
 
 
@@ -202,8 +209,9 @@ def test_reply_sends_text_and_clears_field(qtbot, client, mock):
     qtbot.keyClicks(field, "See you at 7")
     qtbot.keyClick(field, Qt.Key.Key_Return)
     qtbot.waitUntil(lambda: len(mock.actions()) == 1)
-    assert mock.actions() == [{"device": msg["device"], "activity": msg["id"], "action": reply["id"],
-                               "value": "See you at 7"}]
+    assert mock.actions() == [
+        {"device": msg["device"], "activity": msg["id"], "action": reply["id"], "value": "See you at 7"}
+    ]
     qtbot.waitUntil(lambda: field.text() == "")
 
 
@@ -245,10 +253,12 @@ def test_live_media_position_and_chrono_advance(qtbot, client, mock):
 
     # Paused media and a stopped clock freeze.
     pos = mcard.seek.value()
-    mock.update_activity(media["device"], media["id"],
-                         media={**media["media"], "state": "paused", "positionMs": 90000, "positionAtMs": model.now_ms()})
-    mock.update_activity(timer["device"], timer["id"],
-                         chrono={**timer["chrono"], "running": False, "valueMs": 300000})
+    mock.update_activity(
+        media["device"],
+        media["id"],
+        media={**media["media"], "state": "paused", "positionMs": 90000, "positionAtMs": model.now_ms()},
+    )
+    mock.update_activity(timer["device"], timer["id"], chrono={**timer["chrono"], "running": False, "valueMs": 300000})
     qtbot.waitUntil(lambda: mcard.seek.value() == 90000 and tcard.chrono.text() == "5:00")
     qtbot.wait(1200)
     assert mcard.seek.value() == 90000 and mcard.elapsed.text() == "1:30" and tcard.chrono.text() == "5:00"
@@ -295,10 +305,13 @@ def test_starts_without_daemon_then_connects(qtbot, sock_path):
         m.stop()
 
 
-@pytest.mark.parametrize("scenario,headline,button_text", [
-    ("empty", "No phone paired yet", "Pair a device"),
-    ("idle", "Nothing live right now", None),
-])
+@pytest.mark.parametrize(
+    "scenario,headline,button_text",
+    [
+        ("empty", "No phone paired yet", "Pair a device"),
+        ("idle", "Nothing live right now", None),
+    ],
+)
 def test_empty_states(qtbot, sock_path, scenario, headline, button_text):
     m = make_mock(sock_path, scenario=scenario)
     c = DaemonClient(sock_path)
@@ -331,7 +344,9 @@ def device_row_button(panel, name, text):
 def test_devices_page_lists_and_acts(qtbot, client, mock):
     panel = make_panel(qtbot, client)
     panel.show_devices()
-    statuses = {w.parent().device["name"]: w.fullText() for w in panel.devices_page.findChildren(QLabel, "deviceStatus")}
+    statuses = {
+        w.parent().device["name"]: w.fullText() for w in panel.devices_page.findChildren(QLabel, "deviceStatus")
+    }
     assert statuses["Pixel 8"] == "Connected via Wi-Fi"
     assert statuses["Galaxy Tab S9"] == "Connected via Bluetooth"
     assert statuses["Work Phone"] == "Offline"
@@ -342,7 +357,8 @@ def test_devices_page_lists_and_acts(qtbot, client, mock):
     qtbot.mouseClick(device_row_button(panel, "Pixel 7a", "Pair"), Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: any(r["method"] == "devices.connect" for r in mock.requests))
     assert [r for r in mock.requests if r["method"] == "devices.connect"] == [
-        {"method": "devices.connect", "params": {"id": dev_id(mock, "Pixel 7a")}}]
+        {"method": "devices.connect", "params": {"id": dev_id(mock, "Pixel 7a")}}
+    ]
 
     # Forget needs a confirming second click.
     mock.clear_recorded()
@@ -352,8 +368,12 @@ def test_devices_page_lists_and_acts(qtbot, client, mock):
     assert not any(r["method"] == "devices.forget" for r in mock.requests)
     qtbot.mouseClick(device_row_button(panel, "Work Phone", "Forget"), Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: {"method": "devices.forget", "params": {"id": work}} in mock.requests)
-    qtbot.waitUntil(lambda: "Work Phone" not in {
-        w.parent().device["name"] for w in panel.devices_page.findChildren(QLabel, "deviceStatus")})
+    qtbot.waitUntil(
+        lambda: (
+            "Work Phone"
+            not in {w.parent().device["name"] for w in panel.devices_page.findChildren(QLabel, "deviceStatus")}
+        )
+    )
 
     mock.clear_recorded()
     tab = dev_id(mock, "Galaxy Tab S9")
@@ -376,8 +396,9 @@ def test_add_by_address(qtbot, client, mock):
     page.address.clear()
     qtbot.keyClicks(page.address, "10.0.0.5:47820")
     qtbot.mouseClick(page.add_button, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: {"method": "devices.connect", "params": {"host": "10.0.0.5", "port": 47820}}
-                    in mock.requests)
+    qtbot.waitUntil(
+        lambda: {"method": "devices.connect", "params": {"host": "10.0.0.5", "port": 47820}} in mock.requests
+    )
     qtbot.waitUntil(lambda: page.address.text() == "")
 
     page.address.setText("unreachable.invalid:47820")
@@ -390,8 +411,15 @@ def test_add_by_address(qtbot, client, mock):
 
 
 def pending(mock, name="Pixel 7a", session="sess-1", sas="042917", **kw):
-    return {"session": session, "deviceId": dev_id(mock, name), "name": name, "sas": sas,
-            "localAccepted": False, "remoteAccepted": True, **kw}
+    return {
+        "session": session,
+        "deviceId": dev_id(mock, name),
+        "name": name,
+        "sas": sas,
+        "localAccepted": False,
+        "remoteAccepted": True,
+        **kw,
+    }
 
 
 @pytest.mark.parametrize("accept", [True, False])
@@ -407,7 +435,8 @@ def test_pairing_dialog_responds(qtbot, client, mock, accept):
     qtbot.mouseClick(dlg.accept_btn if accept else dlg.cancel, Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: any(r["method"] == "pairing.respond" for r in mock.requests))
     assert [r for r in mock.requests if r["method"] == "pairing.respond"] == [
-        {"method": "pairing.respond", "params": {"session": "sess-1", "accept": accept}}]
+        {"method": "pairing.respond", "params": {"session": "sess-1", "accept": accept}}
+    ]
     # The daemon resolves the pairing -> the dialog goes away.
     qtbot.waitUntil(lambda: "sess-1" not in mgr.dialogs)
     paired = next(d for d in mock.devices if d["name"] == "Pixel 7a")["paired"]
@@ -425,12 +454,14 @@ def test_pairing_dialog_close_rejects_and_tracks_state(qtbot, client, mock):
     assert not dlg.accept_btn.isEnabled()
     mock.clear_recorded()
     dlg.close()
-    qtbot.waitUntil(lambda: {"method": "pairing.respond", "params": {"session": "sess-1", "accept": False}}
-                    in mock.requests)
+    qtbot.waitUntil(
+        lambda: {"method": "pairing.respond", "params": {"session": "sess-1", "accept": False}} in mock.requests
+    )
 
 
 def test_pair_provisional_ble_device_follows_real_id_without_duplicates(qtbot, client, mock):
     from mock_orbitd import PIXEL_9_PRO
+
     from orbit.applet.panel import DeviceRow
 
     prefix = PIXEL_9_PRO[:16]

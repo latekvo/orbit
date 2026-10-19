@@ -6,9 +6,18 @@ import time
 from typing import Any
 
 from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
-                               QStackedWidget, QToolButton, QVBoxLayout, QWidget)
-
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QPushButton,
+    QScrollArea,
+    QStackedWidget,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 from shiboken6 import isValid
 
 from . import icons
@@ -166,26 +175,31 @@ class ActivitiesPage(QWidget):
 
     def _update_empty(self) -> None:
         if not self.client.connected:
-            self.empty.set_state("orbitd is not running",
-                                 "Start the Orbit daemon (orbitd). This panel reconnects automatically.")
+            self.empty.set_state(
+                "orbitd is not running", "Start the Orbit daemon (orbitd). This panel reconnects automatically."
+            )
         elif not any(d.get("paired") for d in self.client.devices):
-            self.empty.set_state("No phone paired yet",
-                                 "Open Orbit on your phone on the same Wi-Fi or nearby with Bluetooth, "
-                                 "then pair it here.", "Pair a device")
+            self.empty.set_state(
+                "No phone paired yet",
+                "Open Orbit on your phone on the same Wi-Fi or nearby with Bluetooth, then pair it here.",
+                "Pair a device",
+            )
         elif not any(d.get("paired") and d.get("connected") for d in self.client.devices):
-            self.empty.set_state("No phone connected",
-                                 "Your paired devices are out of reach. Open Orbit on your phone or "
-                                 "connect it from the devices page.", "Devices")
+            self.empty.set_state(
+                "No phone connected",
+                "Your paired devices are out of reach. Open Orbit on your phone or connect it from the devices page.",
+                "Devices",
+            )
         else:
-            self.empty.set_state("Nothing live right now",
-                                 "Music, timers, downloads, calls and navigation from your phone "
-                                 "show up here.")
+            self.empty.set_state(
+                "Nothing live right now", "Music, timers, downloads, calls and navigation from your phone show up here."
+            )
 
 
 class DeviceRow(QFrame):
     """One device. Updated in place, so it survives a provisional id turning into the real one."""
 
-    def __init__(self, page: "DevicesPage", device: dict):
+    def __init__(self, page: DevicesPage, device: dict):
         super().__init__()
         self.setObjectName("deviceRow")
         self.page = page
@@ -249,7 +263,8 @@ class DeviceRow(QFrame):
             self._button("Forget", self._forget).setProperty("role", "danger")
         else:
             self._button("Pair", lambda: self._run("devices.connect", "Pair", "Pairing...")).setProperty(
-                "role", "primary")
+                "role", "primary"
+            )
 
     def _button(self, text: str, slot) -> QPushButton:
         btn = QPushButton(text)
@@ -348,8 +363,7 @@ class DevicesPage(QWidget):
         return any(p.get("deviceId") == device_id for p in self.client.pairings)
 
     def refresh(self, *_: Any) -> None:
-        devices = [d for d in self.client.devices
-                   if d.get("paired") or d.get("discovered") or d.get("connected")]
+        devices = [d for d in self.client.devices if d.get("paired") or d.get("discovered") or d.get("connected")]
         ids = {d.get("id") for d in devices}
         rows: dict[str, DeviceRow] = {}
         for d in devices:
@@ -357,9 +371,17 @@ class DevicesPage(QWidget):
             row = self._rows.get(did)
             if row is None:
                 # A provisional (BLE prefix) entry is replaced by the real id: keep its row.
-                row = next((r for old, r in self._rows.items()
-                            if r.device.get("provisional") and old not in ids and did.startswith(old)
-                            and r not in rows.values()), None)
+                row = next(
+                    (
+                        r
+                        for old, r in self._rows.items()
+                        if r.device.get("provisional")
+                        and old not in ids
+                        and did.startswith(old)
+                        and r not in rows.values()
+                    ),
+                    None,
+                )
             if row is None:
                 row = DeviceRow(self, d)
             row.update_device(d, self.pairing_pending(did))
@@ -388,8 +410,10 @@ class DevicesPage(QWidget):
                 self.rows_box.addWidget(r)
         if self.client.connected and not devices:
             self._section("No devices found")
-            hint = QLabel("Open Orbit on your phone on the same Wi-Fi network, or with Bluetooth on, "
-                          "and it will appear here. You can also add it by address.")
+            hint = QLabel(
+                "Open Orbit on your phone on the same Wi-Fi network, or with Bluetooth on, "
+                "and it will appear here. You can also add it by address."
+            )
             hint.setProperty("role", "muted")
             hint.setWordWrap(True)
             self._extras.append(hint)
@@ -421,8 +445,9 @@ class DevicesPage(QWidget):
             self.add_button.setEnabled(self.client.connected)
             self.add_button.setText("Connect")
             if error:
-                self.show_message(f"Couldn't connect to {host}:{port}: "
-                                  f"{error.get('message') or error.get('code')}", error=True)
+                self.show_message(
+                    f"Couldn't connect to {host}:{port}: {error.get('message') or error.get('code')}", error=True
+                )
             else:
                 self.address.clear()
                 self.show_message(f"Connected to {host}:{port}. Confirm the pairing code if asked.")
@@ -570,8 +595,12 @@ class Panel(QWidget):
 
     def changeEvent(self, event) -> None:  # noqa: N802
         super().changeEvent(event)
-        if (self.popup and event.type() == QEvent.Type.ActivationChange and self.isVisible()
-                and not self.isActiveWindow()):
+        if (
+            self.popup
+            and event.type() == QEvent.Type.ActivationChange
+            and self.isVisible()
+            and not self.isActiveWindow()
+        ):
             self.last_auto_hide = time.monotonic()
             self.hide()
 

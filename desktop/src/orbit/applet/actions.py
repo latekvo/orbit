@@ -9,18 +9,41 @@ meaning is unambiguous.
 from __future__ import annotations
 
 import re
-from typing import Any, Literal, Mapping
+from collections.abc import Mapping
+from typing import Any, Literal
 
 # Protocol well-known icons (PROTOCOL.md 5.2).
-WELL_KNOWN = {"play", "pause", "next", "previous", "stop", "close", "reply", "add", "remove",
-              "check", "mute", "unmute", "like", "dislike", "shuffle", "repeat", "call_end"}
+WELL_KNOWN = {
+    "play",
+    "pause",
+    "next",
+    "previous",
+    "stop",
+    "close",
+    "reply",
+    "add",
+    "remove",
+    "check",
+    "mute",
+    "unmute",
+    "like",
+    "dislike",
+    "shuffle",
+    "repeat",
+    "call_end",
+}
 
 TRANSPORT_IDS = ("media.previous", "media.play", "media.pause", "media.next")
 PLAY_PAUSE_SLOT = "media.playpause"
 
 _ID_ICONS = {
-    "media.play": "play", "media.pause": "pause", "media.next": "next",
-    "media.previous": "previous", "media.stop": "stop", "open": "open", "dismiss": "close",
+    "media.play": "play",
+    "media.pause": "pause",
+    "media.next": "next",
+    "media.previous": "previous",
+    "media.stop": "stop",
+    "open": "open",
+    "dismiss": "close",
 }
 
 # (pattern on the upper-cased id, glyph); first match wins, so DISLIKE precedes LIKE.
@@ -82,9 +105,19 @@ def icon_for(action: Mapping[str, Any]) -> str | None:
     return None
 
 
-_MODE_STATES = {"off": "inactive", "none": "inactive", "one": "one", "single": "one", "1": "one",
-                "track": "one", "song": "one", "all": "active", "on": "active", "queue": "active",
-                "playlist": "active"}
+_MODE_STATES = {
+    "off": "inactive",
+    "none": "inactive",
+    "one": "one",
+    "single": "one",
+    "1": "one",
+    "track": "one",
+    "song": "one",
+    "all": "active",
+    "on": "active",
+    "queue": "active",
+    "playlist": "active",
+}
 
 
 def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleState:
@@ -103,8 +136,9 @@ def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleS
     if from_label is None and not mode:
         if re.match(r"(remove|undo|unlike|undislike|disable|deactivate|stop)\b|turn .+ off$", label):
             from_label = "active"
-        elif re.match(r"(enable|activate|start)\b|turn .+ on$|add to (liked|favou?rites)", label) or \
-                re.fullmatch(r"(dis)?like|favou?rite|thumbs? (up|down)", label):
+        elif re.match(r"(enable|activate|start)\b|turn .+ on$|add to (liked|favou?rites)", label) or re.fullmatch(
+            r"(dis)?like|favou?rite|thumbs? (up|down)", label
+        ):
             from_label = "inactive"
     active = action.get("active")
     if isinstance(active, bool):

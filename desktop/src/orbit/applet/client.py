@@ -6,7 +6,8 @@ import base64
 import json
 import logging
 from collections import OrderedDict
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import QByteArray, QObject, QTimer, Signal
 from PySide6.QtGui import QPixmap
@@ -124,12 +125,18 @@ class DaemonClient(QObject):
 
     # -- requests --------------------------------------------------------------------------
 
-    def request(self, method: str, params: dict | None = None, callback: Callback | None = None,
-                timeout_ms: int = REQUEST_TIMEOUT_MS) -> int | None:
+    def request(
+        self,
+        method: str,
+        params: dict | None = None,
+        callback: Callback | None = None,
+        timeout_ms: int = REQUEST_TIMEOUT_MS,
+    ) -> int | None:
         if not self.connected:
             if callback:
-                QTimer.singleShot(0, lambda: callback(None, {"code": "not_connected",
-                                                            "message": "orbitd is not running"}))
+                QTimer.singleShot(
+                    0, lambda: callback(None, {"code": "not_connected", "message": "orbitd is not running"})
+                )
             return None
         rid = self._next_id
         self._next_id += 1
@@ -195,8 +202,9 @@ class DaemonClient(QObject):
 
     # -- API helpers -----------------------------------------------------------------------
 
-    def action(self, device: str, activity: str, action: str, value: Any = None,
-               callback: Callback | None = None) -> int | None:
+    def action(
+        self, device: str, activity: str, action: str, value: Any = None, callback: Callback | None = None
+    ) -> int | None:
         params: dict[str, Any] = {"device": device, "activity": activity, "action": action}
         if value is not None:
             params["value"] = value
@@ -212,8 +220,7 @@ class DaemonClient(QObject):
             return pix
         if key not in self._art_requested and self.connected:
             self._art_requested.add(key)
-            self.request("art.get", {"device": device, "key": key},
-                         lambda r, e, k=key: self._on_art(k, r, e))
+            self.request("art.get", {"device": device, "key": key}, lambda r, e, k=key: self._on_art(k, r, e))
         return None
 
     def _on_art(self, key: str, result: Any, error: dict | None) -> None:

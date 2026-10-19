@@ -11,9 +11,17 @@ import time
 import zlib
 
 import pytest
-
 from mock_orbitd import (
-    DEMO_SAS, DOWNLOAD, MESSAGE, PIXEL_7A, PIXEL_8, PIXEL_9_PRO, SPOTIFY, TIMER, WORK_PHONE, MockOrbitd,
+    DEMO_SAS,
+    DOWNLOAD,
+    MESSAGE,
+    PIXEL_7A,
+    PIXEL_8,
+    PIXEL_9_PRO,
+    SPOTIFY,
+    TIMER,
+    WORK_PHONE,
+    MockOrbitd,
 )
 
 
@@ -123,10 +131,14 @@ def test_subscribe_result_then_one_of_each_event(client):
     req = client.send("subscribe")
     msgs = [client.read() for _ in range(4)]
     assert msgs[0] == {"id": req, "result": True}
-    assert [m["event"] for m in msgs[1:]] == ["devices.changed", "pairing.changed",
-                                             "activities.changed"]
+    assert [m["event"] for m in msgs[1:]] == ["devices.changed", "pairing.changed", "activities.changed"]
     assert {d["name"] for d in msgs[1]["data"]["devices"]} == {
-        "Pixel 8", "Galaxy Tab S9", "Work Phone", "Pixel 7a", "Pixel 9 Pro"}
+        "Pixel 8",
+        "Galaxy Tab S9",
+        "Work Phone",
+        "Pixel 7a",
+        "Pixel 9 Pro",
+    }
     assert msgs[2]["data"] == {"pairings": []}
     assert len(msgs[3]["data"]["activities"]) == 6
 
@@ -134,12 +146,18 @@ def test_subscribe_result_then_one_of_each_event(client):
 def test_demo_devices_and_ids(client):
     devices = {d["name"]: d for d in client.call("devices.list")}
     assert devices["Pixel 8"]["id"] == PIXEL_8
-    assert all(len(d["id"]) == (16 if d["provisional"] else 32) and int(d["id"], 16) >= 0
-               for d in devices.values())
+    assert all(len(d["id"]) == (16 if d["provisional"] else 32) and int(d["id"], 16) >= 0 for d in devices.values())
     assert devices["Pixel 9 Pro"] == {
-        "id": PIXEL_9_PRO[:16], "name": "Pixel 9 Pro", "platform": "", "paired": False,
-        "connected": False, "transport": None, "address": None, "discovered": ["ble"],
-        "provisional": True}
+        "id": PIXEL_9_PRO[:16],
+        "name": "Pixel 9 Pro",
+        "platform": "",
+        "paired": False,
+        "connected": False,
+        "transport": None,
+        "address": None,
+        "discovered": ["ble"],
+        "provisional": True,
+    }
     assert devices["Work Phone"]["connected"] is False
     assert devices["Pixel 7a"]["paired"] is False
 
@@ -169,8 +187,7 @@ def test_play_pause_toggle(mock, client):
 
 def test_next_switches_track_and_art(mock, client):
     first = act(mock.activities, PIXEL_8, SPOTIFY)
-    client.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY,
-                                      "action": "media.next"})
+    client.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY, "action": "media.next"})
     second = act(mock.activities, PIXEL_8, SPOTIFY)
     assert second["title"] != first["title"]
     assert second["artKey"] != first["artKey"]
@@ -199,14 +216,15 @@ def test_reply_sets_text(mock, client):
 
 def test_action_errors(client):
     def code(**p):
-        return client.error("activities.action", {"device": PIXEL_8, "activity": SPOTIFY,
-                                                  "action": "media.pause", **p})
+        return client.error("activities.action", {"device": PIXEL_8, "activity": SPOTIFY, "action": "media.pause", **p})
+
     assert code(device="0" * 32) == "not_found"
     assert code(activity="nope") == "not_found"
     assert code(device=WORK_PHONE) == "not_connected"
-    assert client.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY,
-                                             "action": "media.play"}) == {
-        "ok": False, "error": "unsupported action"}
+    assert client.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY, "action": "media.play"}) == {
+        "ok": False,
+        "error": "unsupported action",
+    }
 
 
 def test_fail_next_action(mock, client):
@@ -220,8 +238,7 @@ def test_fail_next_action(mock, client):
 
 def test_action_delay_does_not_block_other_requests(mock, client):
     mock.action_delay_s = 0.5
-    slow = client.send("activities.action", {"device": PIXEL_8, "activity": SPOTIFY,
-                                             "action": "media.pause"})
+    slow = client.send("activities.action", {"device": PIXEL_8, "activity": SPOTIFY, "action": "media.pause"})
     fast = client.send("status")
     t0 = time.monotonic()
     assert client.read()["id"] == fast
@@ -274,8 +291,7 @@ def test_connect_host_port_pair_accept(mock, client):
     assert client.call("pairing.list") == []
     dev = next(d for d in mock.devices if d["id"] == new_id)
     assert dev["paired"] is True and dev["connected"] is True
-    assert client.error("pairing.respond", {"session": pairing["session"],
-                                            "accept": True}) == "not_found"
+    assert client.error("pairing.respond", {"session": pairing["session"], "accept": True}) == "not_found"
 
 
 def test_connect_unpaired_discovered_then_reject(mock, client):
@@ -308,8 +324,7 @@ def test_disconnect_hides_activities_and_reconnect_restores(mock, client):
 
 
 def test_stop_gives_eof_and_restart_keeps_state(mock, client, sock_path):
-    client.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY,
-                                      "action": "media.pause"})
+    client.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY, "action": "media.pause"})
     assert mock.connection_count == 1
     t0 = time.monotonic()
     mock.stop()
@@ -329,9 +344,9 @@ def _png_size(data: bytes) -> tuple[int, int]:
     assert data[:8] == b"\x89PNG\r\n\x1a\n"
     pos, size, idat = 8, None, b""
     while pos < len(data):
-        (length,), tag = struct.unpack(">I", data[pos:pos + 4]), data[pos + 4:pos + 8]
-        body = data[pos + 8:pos + 8 + length]
-        (crc,) = struct.unpack(">I", data[pos + 8 + length:pos + 12 + length])
+        (length,), tag = struct.unpack(">I", data[pos : pos + 4]), data[pos + 4 : pos + 8]
+        body = data[pos + 8 : pos + 8 + length]
+        (crc,) = struct.unpack(">I", data[pos + 8 + length : pos + 12 + length])
         assert crc == zlib.crc32(tag + body)
         if tag == b"IHDR":
             size = struct.unpack(">II", body[:8])
@@ -369,8 +384,7 @@ def test_mutators_broadcast(mock, client):
     mock.set_pairings([])
     mock.set_activities([])
     client.call("status")
-    assert [e["event"] for e in client.events] == ["devices.changed", "pairing.changed",
-                                                   "activities.changed"]
+    assert [e["event"] for e in client.events] == ["devices.changed", "pairing.changed", "activities.changed"]
 
 
 def test_unparseable_lines_ignored_and_recorded(mock, client):
@@ -408,8 +422,7 @@ def test_evolve_auto_advances_track(sock_path):
         c = Client(sock_path)
         first = act(m.activities, PIXEL_8, SPOTIFY)
         end = first["media"]["durationMs"] - 50
-        c.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY,
-                                     "action": "media.seek", "value": end})
+        c.call("activities.action", {"device": PIXEL_8, "activity": SPOTIFY, "action": "media.seek", "value": end})
         time.sleep(0.4)
         second = act(m.activities, PIXEL_8, SPOTIFY)
         assert second["title"] != first["title"]

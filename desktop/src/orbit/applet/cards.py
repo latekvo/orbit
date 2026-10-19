@@ -3,14 +3,37 @@
 from __future__ import annotations
 
 import copy
-from typing import Any, Callable
+from collections.abc import Callable
+from typing import Any
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap,
-                           QTextLayout, QTextOption)
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QProgressBar, QSizePolicy,
-                               QSlider, QStyle, QStyleOptionSlider, QToolButton, QVBoxLayout, QWidget)
-
+from PySide6.QtGui import (
+    QAction,
+    QColor,
+    QFont,
+    QFontMetrics,
+    QIcon,
+    QPainter,
+    QPainterPath,
+    QPixmap,
+    QTextLayout,
+    QTextOption,
+)
+from PySide6.QtWidgets import (
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QLineEdit,
+    QMenu,
+    QProgressBar,
+    QSizePolicy,
+    QSlider,
+    QStyle,
+    QStyleOptionSlider,
+    QToolButton,
+    QVBoxLayout,
+    QWidget,
+)
 from shiboken6 import isValid
 
 from . import actions as acts
@@ -87,12 +110,12 @@ class ClampedLabel(QLabel):
         layout.endLayout()
         fm = QFontMetrics(self.font())
         lines = []
-        for i, (start, length) in enumerate(spans[:self._max_lines]):
+        for i, (start, length) in enumerate(spans[: self._max_lines]):
             if i == self._max_lines - 1 and len(spans) > self._max_lines:
                 rest = self._full[start:].replace("\u2028", " ")
                 lines.append(fm.elidedText(rest, Qt.TextElideMode.ElideRight, width))
             else:
-                lines.append(self._full[start:start + length].replace("\u2028", "").rstrip())
+                lines.append(self._full[start : start + length].replace("\u2028", "").rstrip())
         text = "\n".join(lines)
         clamped = len(spans) > self._max_lines
         self.setToolTip(self.fullText() if clamped else "")
@@ -159,11 +182,13 @@ class SeekSlider(QSlider):
         if event.button() == Qt.MouseButton.LeftButton and self.isEnabled():
             opt = QStyleOptionSlider()
             self.initStyleOption(opt)
-            handle = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
-                                                 QStyle.SubControl.SC_SliderHandle, self)
+            handle = self.style().subControlRect(
+                QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderHandle, self
+            )
             if not handle.contains(event.position().toPoint()):
-                groove = self.style().subControlRect(QStyle.ComplexControl.CC_Slider, opt,
-                                                     QStyle.SubControl.SC_SliderGroove, self)
+                groove = self.style().subControlRect(
+                    QStyle.ComplexControl.CC_Slider, opt, QStyle.SubControl.SC_SliderGroove, self
+                )
                 span = max(groove.width() - handle.width(), 1)
                 x = int(event.position().x()) - groove.x() - handle.width() // 2
                 self.setValue(QStyle.sliderValueFromPosition(self.minimum(), self.maximum(), x, span))
@@ -173,8 +198,7 @@ class SeekSlider(QSlider):
 class ActionStrip(QWidget):
     """Up to `max_rows` rows of buttons; what does not fit moves into a trailing "more" menu."""
 
-    def __init__(self, theme: Theme, center: bool, spacing: int, max_rows: int = 1,
-                 parent: QWidget | None = None):
+    def __init__(self, theme: Theme, center: bool, spacing: int, max_rows: int = 1, parent: QWidget | None = None):
         super().__init__(parent)
         self._center = center
         self._max_rows = max_rows
@@ -475,8 +499,7 @@ class ActivityCard(QFrame):
                 self.seek.setRange(0, int(media["durationMs"]))
             self.seek.setEnabled(bool(media.get("seekable")))
             self.duration.setText(format_clock(media["durationMs"]))
-            self.seek.setStyleSheet(
-                f"QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}")
+            self.seek.setStyleSheet(f"QSlider::sub-page:horizontal {{ background: {accent}; border-radius: 2px; }}")
 
         self._rebuild_actions()
         self.tick(now_ms())
@@ -514,8 +537,10 @@ class ActivityCard(QFrame):
         actions = [x for x in self.activity.get("actions") or [] if isinstance(x, dict) and x.get("id")]
         is_media = self.activity.get("kind") == "media"
         # Widgets are keyed by slot, not label, so a toggle relabelling itself keeps its button.
-        slots = (is_media, [(acts.slot_key(x, is_media), bool(x.get("input")), acts.icon_for(x) is not None)
-                            for x in actions])
+        slots = (
+            is_media,
+            [(acts.slot_key(x, is_media), bool(x.get("input")), acts.icon_for(x) is not None) for x in actions],
+        )
         if slots != self._actions_sig:
             self._actions_sig = slots
             self._build_action_widgets(actions, is_media)
@@ -541,8 +566,9 @@ class ActivityCard(QFrame):
                 self.actions_layout.addWidget(self.transport_strip)
             if secondary:
                 self.secondary_strip = ActionStrip(self.theme, center=True, spacing=4)
-                self.secondary_strip.set_buttons([self._new_button(x, "secondary") for x in secondary
-                                                  if acts.icon_for(x)])
+                self.secondary_strip.set_buttons(
+                    [self._new_button(x, "secondary") for x in secondary if acts.icon_for(x)]
+                )
         elif plain:
             self.secondary_strip = ActionStrip(self.theme, center=False, spacing=6, max_rows=2)
             self.secondary_strip.set_buttons([self._new_button(x, "pill") for x in plain])
@@ -594,8 +620,7 @@ class ActivityCard(QFrame):
             self._buttons[aid] = btn
         for strip in (self.transport_strip, self.secondary_strip):
             if strip is not None:
-                strip.set_menu_only(menu_only if strip is self.secondary_strip else [],
-                                    lambda aid: self.trigger(aid))
+                strip.set_menu_only(menu_only if strip is self.secondary_strip else [], lambda aid: self.trigger(aid))
 
     def _glyph_icon(self, action: dict, color: str | None):
         glyph = acts.icon_for(action)
@@ -608,7 +633,8 @@ class ActivityCard(QFrame):
             glyph = "repeat_one"
         if color is None:
             color = {"active": self.accent(), "one": self.accent(), "inactive": self.theme.muted}.get(
-                state or "", self.theme.text)
+                state or "", self.theme.text
+            )
         return icons.icon(glyph, color)
 
     def _style_button(self, btn: QToolButton, action: dict) -> None:
@@ -620,13 +646,16 @@ class ActivityCard(QFrame):
         if kind == "pill":
             label = action.get("label") or action["id"]
             btn.setText(QFontMetrics(btn.font()).elidedText(label, Qt.TextElideMode.ElideRight, PILL_MAX_TEXT))
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon if ic is not None
-                                   else Qt.ToolButtonStyle.ToolButtonTextOnly)
+            btn.setToolButtonStyle(
+                Qt.ToolButtonStyle.ToolButtonTextBesideIcon if ic is not None else Qt.ToolButtonStyle.ToolButtonTextOnly
+            )
         elif primary:
             btn.setFixedSize(44, 44)
             accent = self.accent()
-            btn.setStyleSheet(f"QToolButton {{ background: {accent}; border-radius: 22px; }}"
-                              f"QToolButton:hover {{ background: {QColor(accent).lighter(115).name()}; }}")
+            btn.setStyleSheet(
+                f"QToolButton {{ background: {accent}; border-radius: 22px; }}"
+                f"QToolButton:hover {{ background: {QColor(accent).lighter(115).name()}; }}"
+            )
 
     def _make_input(self, action: dict, draft: str) -> QWidget:
         aid = action["id"]

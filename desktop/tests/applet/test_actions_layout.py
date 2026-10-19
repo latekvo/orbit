@@ -5,10 +5,10 @@ import json
 from pathlib import Path
 
 import pytest
+from applet_helpers import make_mock
 from PySide6.QtCore import QPoint, QRect, Qt
 from PySide6.QtWidgets import QToolButton, QWidget
 
-from applet_helpers import make_mock
 from orbit.applet import actions as acts
 from orbit.applet import icons
 from orbit.applet.client import DaemonClient
@@ -16,77 +16,107 @@ from orbit.applet.panel import Panel
 from orbit.applet.theme import LIGHT
 
 LIVE = json.loads((Path(__file__).parent / "fixtures" / "live_activities.json").read_text())
-LIVE_DEVICE = {"id": LIVE[0]["device"], "name": "OPPO Find X5", "platform": "android", "paired": True,
-               "connected": True, "transport": "lan", "address": "192.168.1.50:47820", "discovered": ["lan"]}
+LIVE_DEVICE = {
+    "id": LIVE[0]["device"],
+    "name": "OPPO Find X5",
+    "platform": "android",
+    "paired": True,
+    "connected": True,
+    "transport": "lan",
+    "address": "192.168.1.50:47820",
+    "discovered": ["lan"],
+}
 
 
 # -- pure rules ------------------------------------------------------------------------------
 
-@pytest.mark.parametrize("action,glyph", [
-    ({"id": "media.custom.TOGGLE_LIKE", "label": "Remove like"}, "like"),
-    ({"id": "media.custom.TOGGLE_LIKE", "label": "Like"}, "like"),
-    ({"id": "media.custom.THUMBS_DOWN", "label": "Dislike"}, "dislike"),
-    ({"id": "media.custom.TOGGLE_DISLIKE", "label": "Remove dislike"}, "dislike"),
-    ({"id": "media.custom.TOGGLE_SHUFFLE", "label": "Shuffle on", "icon": "shuffle"}, "shuffle"),
-    ({"id": "media.custom.TOGGLE_REPEAT_MODE", "label": "Repeat mode one"}, "repeat"),
-    ({"id": "media.custom.TOGGLE_START_RADIO", "label": "Start radio"}, "radio"),
-    ({"id": "media.custom.ADD_TO_TARGET_PLAYLIST", "label": "Quick-add destination"}, "playlist_add"),
-    ({"id": "media.custom.ADD_TO_LIBRARY", "label": "Save"}, "add"),
-    ({"id": "media.custom.X", "label": "Whatever", "icon": "like"}, "like"),  # icon hint when id is opaque
-    ({"id": "open", "label": "Open"}, "open"),
-    ({"id": "media.pause", "label": "Pause", "icon": "pause"}, "pause"),
-    ({"id": "notif.0", "label": "Mark as read"}, "check"),
-    ({"id": "notif.1", "label": "Archive this chat"}, None),
-    ({"id": "notif.3", "label": "Call back now"}, None),
-    ({"id": "notif.2", "label": "Unknown", "icon": "sparkles"}, None),
-])
+
+@pytest.mark.parametrize(
+    "action,glyph",
+    [
+        ({"id": "media.custom.TOGGLE_LIKE", "label": "Remove like"}, "like"),
+        ({"id": "media.custom.TOGGLE_LIKE", "label": "Like"}, "like"),
+        ({"id": "media.custom.THUMBS_DOWN", "label": "Dislike"}, "dislike"),
+        ({"id": "media.custom.TOGGLE_DISLIKE", "label": "Remove dislike"}, "dislike"),
+        ({"id": "media.custom.TOGGLE_SHUFFLE", "label": "Shuffle on", "icon": "shuffle"}, "shuffle"),
+        ({"id": "media.custom.TOGGLE_REPEAT_MODE", "label": "Repeat mode one"}, "repeat"),
+        ({"id": "media.custom.TOGGLE_START_RADIO", "label": "Start radio"}, "radio"),
+        ({"id": "media.custom.ADD_TO_TARGET_PLAYLIST", "label": "Quick-add destination"}, "playlist_add"),
+        ({"id": "media.custom.ADD_TO_LIBRARY", "label": "Save"}, "add"),
+        ({"id": "media.custom.X", "label": "Whatever", "icon": "like"}, "like"),  # icon hint when id is opaque
+        ({"id": "open", "label": "Open"}, "open"),
+        ({"id": "media.pause", "label": "Pause", "icon": "pause"}, "pause"),
+        ({"id": "notif.0", "label": "Mark as read"}, "check"),
+        ({"id": "notif.1", "label": "Archive this chat"}, None),
+        ({"id": "notif.3", "label": "Call back now"}, None),
+        ({"id": "notif.2", "label": "Unknown", "icon": "sparkles"}, None),
+    ],
+)
 def test_icon_for(action, glyph):
     assert acts.icon_for(action) == glyph
     if glyph:
         assert icons.svg_for(glyph, "#000000") is not None
 
 
-@pytest.mark.parametrize("label,state", [
-    ("Remove like", "active"), ("Unlike", "active"), ("Like", "inactive"), ("Add to liked songs", "inactive"),
-    ("Liked", None), ("Toggle like", None),
-])
+@pytest.mark.parametrize(
+    "label,state",
+    [
+        ("Remove like", "active"),
+        ("Unlike", "active"),
+        ("Like", "inactive"),
+        ("Add to liked songs", "inactive"),
+        ("Liked", None),
+        ("Toggle like", None),
+    ],
+)
 def test_like_state(label, state):
     assert acts.toggle_state({"id": "media.custom.TOGGLE_LIKE", "label": label}) == state
 
 
-@pytest.mark.parametrize("aid,label,state", [
-    # Bare "<thing> on/off" may name the state or the action (Metrolist: the action) -> neutral.
-    ("media.custom.TOGGLE_SHUFFLE", "Shuffle on", None),
-    ("media.custom.TOGGLE_SHUFFLE", "Shuffle off", None),
-    ("media.custom.TOGGLE_SHUFFLE", "Shuffle", None),
-    ("media.custom.TOGGLE_SHUFFLE", "Turn shuffle off", "active"),
-    ("media.custom.TOGGLE_SHUFFLE", "Turn shuffle on", "inactive"),
-    ("media.custom.TOGGLE_SHUFFLE", "Disable shuffle", "active"),
-    ("media.custom.TOGGLE_SHUFFLE", "Enable shuffle", "inactive"),
-    ("media.custom.TOGGLE_SHUFFLE", "Shuffle mode on", "active"),
-    # "mode" or a colon marks a state.
-    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode off", "inactive"),
-    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode one", "one"),
-    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode all", "active"),
-    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat: one", "one"),
-    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat off", None),
-    ("media.custom.TOGGLE_START_RADIO", "Start radio", None),  # not a toggle glyph
-])
+@pytest.mark.parametrize(
+    "aid,label,state",
+    [
+        # Bare "<thing> on/off" may name the state or the action (Metrolist: the action) -> neutral.
+        ("media.custom.TOGGLE_SHUFFLE", "Shuffle on", None),
+        ("media.custom.TOGGLE_SHUFFLE", "Shuffle off", None),
+        ("media.custom.TOGGLE_SHUFFLE", "Shuffle", None),
+        ("media.custom.TOGGLE_SHUFFLE", "Turn shuffle off", "active"),
+        ("media.custom.TOGGLE_SHUFFLE", "Turn shuffle on", "inactive"),
+        ("media.custom.TOGGLE_SHUFFLE", "Disable shuffle", "active"),
+        ("media.custom.TOGGLE_SHUFFLE", "Enable shuffle", "inactive"),
+        ("media.custom.TOGGLE_SHUFFLE", "Shuffle mode on", "active"),
+        # "mode" or a colon marks a state.
+        ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode off", "inactive"),
+        ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode one", "one"),
+        ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode all", "active"),
+        ("media.custom.TOGGLE_REPEAT_MODE", "Repeat: one", "one"),
+        ("media.custom.TOGGLE_REPEAT_MODE", "Repeat off", None),
+        ("media.custom.TOGGLE_START_RADIO", "Start radio", None),  # not a toggle glyph
+    ],
+)
 def test_mode_state(aid, label, state):
     assert acts.toggle_state({"id": aid, "label": label}) == state
 
 
-@pytest.mark.parametrize("label,active,state", [
-    ("Shuffle on", False, "inactive"), ("Shuffle on", True, "active"),
-    ("Remove like", False, "inactive"),  # the explicit field wins over the label
-    ("Repeat mode one", True, "one"), ("Repeat mode one", False, "inactive"),
-])
+@pytest.mark.parametrize(
+    "label,active,state",
+    [
+        ("Shuffle on", False, "inactive"),
+        ("Shuffle on", True, "active"),
+        ("Remove like", False, "inactive"),  # the explicit field wins over the label
+        ("Repeat mode one", True, "one"),
+        ("Repeat mode one", False, "inactive"),
+    ],
+)
 def test_explicit_active_field_wins(label, active, state):
-    aid = {"S": "media.custom.TOGGLE_SHUFFLE", "R": "media.custom.TOGGLE_LIKE"}.get(label[0], "media.custom.TOGGLE_REPEAT_MODE")
+    aid = {"S": "media.custom.TOGGLE_SHUFFLE", "R": "media.custom.TOGGLE_LIKE"}.get(
+        label[0], "media.custom.TOGGLE_REPEAT_MODE"
+    )
     assert acts.toggle_state({"id": aid, "label": label, "active": active}) == state
 
 
 # -- layout helpers --------------------------------------------------------------------------
+
 
 def setup(qtbot, sock_path, activities, devices=None, scenario="empty"):
     mock = make_mock(sock_path, scenario=scenario)
@@ -151,6 +181,7 @@ def run_all_actions(qtbot, mock, card):
 
 # -- tests -----------------------------------------------------------------------------------
 
+
 def test_live_metrolist_payload_fits_and_every_action_is_reachable(qtbot, sock_path):
     mock, client, panel = setup(qtbot, sock_path, copy.deepcopy(LIVE), devices=[LIVE_DEVICE])
     try:
@@ -158,10 +189,19 @@ def test_live_metrolist_payload_fits_and_every_action_is_reachable(qtbot, sock_p
         assert_fits(panel)
         assert card.duration.isVisibleTo(card) and card.duration.text() == "4:12"
         # Transport is its own prominent row; nothing in it is a text pill.
-        assert [b.property("actionId") for b in card.transport_strip.buttons()] == \
-            ["media.previous", "media.pause", "media.next"]
-        for aid in ("media.custom.TOGGLE_LIKE", "media.custom.TOGGLE_REPEAT_MODE", "media.custom.TOGGLE_SHUFFLE",
-                    "media.custom.TOGGLE_START_RADIO", "media.custom.ADD_TO_TARGET_PLAYLIST", "media.stop"):
+        assert [b.property("actionId") for b in card.transport_strip.buttons()] == [
+            "media.previous",
+            "media.pause",
+            "media.next",
+        ]
+        for aid in (
+            "media.custom.TOGGLE_LIKE",
+            "media.custom.TOGGLE_REPEAT_MODE",
+            "media.custom.TOGGLE_SHUFFLE",
+            "media.custom.TOGGLE_START_RADIO",
+            "media.custom.ADD_TO_TARGET_PLAYLIST",
+            "media.stop",
+        ):
             btn = card.findChild(QToolButton, f"action:{aid}")
             assert btn is not None and btn.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
             assert btn.text() == "" and not btn.icon().isNull()
@@ -218,8 +258,15 @@ def test_metrolist_toggles_keep_their_button_when_relabelled(qtbot, sock_path):
             out = {}
             for aid in ids:
                 b = card.findChild(QToolButton, f"action:{aid}")
-                out[aid] = (b, b.geometry(), b.toolButtonStyle(), b.text(), b.property("toggleState"),
-                            b.icon().pixmap(20, 20).toImage(), b.toolTip())
+                out[aid] = (
+                    b,
+                    b.geometry(),
+                    b.toolButtonStyle(),
+                    b.text(),
+                    b.property("toggleState"),
+                    b.icon().pixmap(20, 20).toImage(),
+                    b.toolTip(),
+                )
             return out
 
         before = snapshot()

@@ -5,8 +5,9 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections.abc import Mapping
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 
 def now_ms() -> float:

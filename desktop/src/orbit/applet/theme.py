@@ -32,12 +32,32 @@ class Theme:
         ).name()
 
 
-LIGHT = Theme(dark=False, window="#f2f2f5", card="#ffffff", border="#e2e2e7", text="#1d1d1f",
-              muted="#6e6e73", accent="#0a7cff", danger="#d70015", track="#e3e3e8",
-              hover="#ececf1", field="#f5f5f8")
-DARK = Theme(dark=True, window="#1b1b1d", card="#2a2a2d", border="#3a3a3e", text="#f2f2f7",
-             muted="#9a9aa1", accent="#3b9bff", danger="#ff5c52", track="#414146",
-             hover="#38383c", field="#1f1f22")
+LIGHT = Theme(
+    dark=False,
+    window="#f2f2f5",
+    card="#ffffff",
+    border="#e2e2e7",
+    text="#1d1d1f",
+    muted="#6e6e73",
+    accent="#0a7cff",
+    danger="#d70015",
+    track="#e3e3e8",
+    hover="#ececf1",
+    field="#f5f5f8",
+)
+DARK = Theme(
+    dark=True,
+    window="#1b1b1d",
+    card="#2a2a2d",
+    border="#3a3a3e",
+    text="#f2f2f7",
+    muted="#9a9aa1",
+    accent="#3b9bff",
+    danger="#ff5c52",
+    track="#414146",
+    hover="#38383c",
+    field="#1f1f22",
+)
 
 
 def resolve(mode: str = "auto") -> Theme:
@@ -56,13 +76,20 @@ def resolve(mode: str = "auto") -> Theme:
 def palette(t: Theme) -> QPalette:
     p = QPalette()
     roles = {
-        QPalette.ColorRole.Window: t.window, QPalette.ColorRole.WindowText: t.text,
-        QPalette.ColorRole.Base: t.field, QPalette.ColorRole.AlternateBase: t.card,
-        QPalette.ColorRole.Text: t.text, QPalette.ColorRole.Button: t.card,
-        QPalette.ColorRole.ButtonText: t.text, QPalette.ColorRole.Highlight: t.accent,
-        QPalette.ColorRole.HighlightedText: "#ffffff", QPalette.ColorRole.ToolTipBase: t.card,
-        QPalette.ColorRole.ToolTipText: t.text, QPalette.ColorRole.PlaceholderText: t.muted,
-        QPalette.ColorRole.Mid: t.border, QPalette.ColorRole.Light: t.hover,
+        QPalette.ColorRole.Window: t.window,
+        QPalette.ColorRole.WindowText: t.text,
+        QPalette.ColorRole.Base: t.field,
+        QPalette.ColorRole.AlternateBase: t.card,
+        QPalette.ColorRole.Text: t.text,
+        QPalette.ColorRole.Button: t.card,
+        QPalette.ColorRole.ButtonText: t.text,
+        QPalette.ColorRole.Highlight: t.accent,
+        QPalette.ColorRole.HighlightedText: "#ffffff",
+        QPalette.ColorRole.ToolTipBase: t.card,
+        QPalette.ColorRole.ToolTipText: t.text,
+        QPalette.ColorRole.PlaceholderText: t.muted,
+        QPalette.ColorRole.Mid: t.border,
+        QPalette.ColorRole.Light: t.hover,
     }
     for role, color in roles.items():
         p.setColor(role, QColor(color))

@@ -17,12 +17,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     from .model import default_socket_path
 
     p = argparse.ArgumentParser(prog="orbit-applet", description="Orbit tray applet (client of orbitd)")
-    p.add_argument("--socket", type=Path, default=None,
-                   help=f"orbitd socket (default: $ORBIT_SOCKET or {default_socket_path()})")
+    p.add_argument(
+        "--socket", type=Path, default=None, help=f"orbitd socket (default: $ORBIT_SOCKET or {default_socket_path()})"
+    )
     p.add_argument("--theme", choices=["auto", "light", "dark"], default="auto")
     p.add_argument("--show-panel", action="store_true", help="open the panel on startup (debug)")
-    p.add_argument("--screenshot", type=Path, metavar="PNG",
-                   help="debug: once data has loaded, save the panel to PNG and quit")
+    p.add_argument(
+        "--screenshot", type=Path, metavar="PNG", help="debug: once data has loaded, save the panel to PNG and quit"
+    )
     p.add_argument("--quit-after", type=float, metavar="SECONDS", help="debug: quit after N seconds")
     p.add_argument("-v", "--verbose", action="count", default=0)
     return p.parse_args(argv)
@@ -41,9 +43,11 @@ def hide_dock_icon() -> bool:
         send.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
         app = send(objc.objc_getClass(b"NSApplication"), objc.sel_registerName(b"sharedApplication"))
         set_policy = ctypes.CFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_long)(
-            ctypes.cast(send, ctypes.c_void_p).value)
+            ctypes.cast(send, ctypes.c_void_p).value
+        )
         get_policy = ctypes.CFUNCTYPE(ctypes.c_long, ctypes.c_void_p, ctypes.c_void_p)(
-            ctypes.cast(send, ctypes.c_void_p).value)
+            ctypes.cast(send, ctypes.c_void_p).value
+        )
         set_policy(app, objc.sel_registerName(b"setActivationPolicy:"), 1)  # Accessory
         return get_policy(app, objc.sel_registerName(b"activationPolicy")) == 1
     except (OSError, AttributeError, TypeError) as exc:
@@ -53,8 +57,10 @@ def hide_dock_icon() -> bool:
 
 def main(argv: list[str] | None = None) -> int:
     args = parse_args(argv)
-    logging.basicConfig(level=logging.DEBUG if args.verbose > 1 else logging.INFO,
-                        format="%(asctime)s %(name)s %(levelname)s: %(message)s")
+    logging.basicConfig(
+        level=logging.DEBUG if args.verbose > 1 else logging.INFO,
+        format="%(asctime)s %(name)s %(levelname)s: %(message)s",
+    )
 
     from PySide6.QtCore import QTimer
     from PySide6.QtGui import QGuiApplication

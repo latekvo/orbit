@@ -57,8 +57,12 @@ class TrayController(QObject):
 
     def show(self) -> None:
         self.tray.show()
-        log.info("tray icon created: system tray available=%s, visible=%s, geometry=%s",
-                 QSystemTrayIcon.isSystemTrayAvailable(), self.tray.isVisible(), _rect(self.tray.geometry()))
+        log.info(
+            "tray icon created: system tray available=%s, visible=%s, geometry=%s",
+            QSystemTrayIcon.isSystemTrayAvailable(),
+            self.tray.isVisible(),
+            _rect(self.tray.geometry()),
+        )
 
     def hide(self) -> None:
         self.tray.hide()
@@ -114,10 +118,16 @@ class TrayController(QObject):
         pos = compute_panel_position(anchor, self.panel.size(), screen.availableGeometry())
         log.info("showing panel at (%d, %d), anchor=%s", pos.x(), pos.y(), _rect(anchor))
         self.panel.show_at(pos)
-        QTimer.singleShot(300, lambda: log.info(
-            "panel visible=%s exposed=%s active=%s geometry=%s", self.panel.isVisible(),
-            bool(self.panel.windowHandle() and self.panel.windowHandle().isExposed()),
-            self.panel.isActiveWindow(), _rect(self.panel.geometry())))
+        QTimer.singleShot(
+            300,
+            lambda: log.info(
+                "panel visible=%s exposed=%s active=%s geometry=%s",
+                self.panel.isVisible(),
+                bool(self.panel.windowHandle() and self.panel.windowHandle().isExposed()),
+                self.panel.isActiveWindow(),
+                _rect(self.panel.geometry()),
+            ),
+        )
 
     # -- menu ------------------------------------------------------------------------------
 
@@ -125,8 +135,11 @@ class TrayController(QObject):
         m = self.menu
         m.clear()
         c = self.client
-        status = (f"orbitd {c.status.get('version', '')} - connected".replace("  ", " ")
-                  if c.connected else "orbitd not running")
+        status = (
+            f"orbitd {c.status.get('version', '')} - connected".replace("  ", " ")
+            if c.connected
+            else "orbitd not running"
+        )
         head = m.addAction(status)
         head.setEnabled(False)
         m.addAction("Show activities", self.show_panel)
@@ -153,15 +166,19 @@ class TrayController(QObject):
 
     def _on_pairing_started(self, pairing: dict) -> None:
         if self.tray.isVisible() and QSystemTrayIcon.supportsMessages():
-            self.tray.showMessage("Orbit pairing",
-                                  f"Confirm the code {pairing.get('sas', '')} on {pairing.get('name') or 'your phone'}",
-                                  QSystemTrayIcon.MessageIcon.Information, 8000)
+            self.tray.showMessage(
+                "Orbit pairing",
+                f"Confirm the code {pairing.get('sas', '')} on {pairing.get('name') or 'your phone'}",
+                QSystemTrayIcon.MessageIcon.Information,
+                8000,
+            )
 
     def _on_pairing_finished(self, pairing: dict) -> None:
         dev = next((d for d in self.client.devices if d.get("id") == pairing.get("deviceId")), None)
         if dev and dev.get("paired") and self.tray.isVisible() and QSystemTrayIcon.supportsMessages():
-            self.tray.showMessage("Orbit", f"Paired with {dev.get('name') or 'your phone'}",
-                                  QSystemTrayIcon.MessageIcon.Information, 4000)
+            self.tray.showMessage(
+                "Orbit", f"Paired with {dev.get('name') or 'your phone'}", QSystemTrayIcon.MessageIcon.Information, 4000
+            )
 
 
 def _rect(r: QRect) -> str:
