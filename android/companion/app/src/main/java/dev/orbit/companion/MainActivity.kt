@@ -99,6 +99,17 @@ class MainActivity : ComponentActivity() {
         val granted = remember(resumeTick, connected) { listenerGranted() }
         val missing = remember(resumeTick) { missingPermissions() }
 
+        var forgetting by remember { mutableStateOf<PinnedPeer?>(null) }
+        forgetting?.let { p ->
+            AlertDialog(
+                onDismissRequest = { forgetting = null },
+                title = { Text("Forget ${p.name}?") },
+                text = { Text("It will need to pair again to see your activities.") },
+                confirmButton = { Button(onClick = { orbit.forget(p.id); forgetting = null }) { Text("Forget") } },
+                dismissButton = { TextButton(onClick = { forgetting = null }) { Text("Cancel") } },
+            )
+        }
+
         sessions.firstOrNull { it.state == ResponderSession.State.PAIRING && it.localDecision == null }?.let { p ->
             AlertDialog(
                 onDismissRequest = {},
@@ -162,7 +173,7 @@ class MainActivity : ComponentActivity() {
                         Text(p.name)
                         Text("${p.platform} · ${p.id.take(8)}", style = MaterialTheme.typography.bodySmall)
                     }
-                    OutlinedButton(onClick = { orbit.forget(p.id) }) { Text("Forget") }
+                    OutlinedButton(onClick = { forgetting = p }) { Text("Forget") }
                 }
             }
             item { Text("Exported activities (${activities.size})", fontWeight = FontWeight.Bold) }

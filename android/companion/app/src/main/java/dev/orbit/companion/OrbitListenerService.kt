@@ -71,6 +71,12 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     override fun onListenerConnected() {
         orbit.actionExecutor = this
         orbit.listenerConnected.value = true
+        // The system keeps this listener bound, so it is the most reliable place to (re)start serving.
+        try {
+            OrbitService.start(this)
+        } catch (e: IllegalStateException) {
+            Log.w(TAG, "could not start the foreground service from the listener", e)
+        }
         val active = runCatching { activeNotifications?.toList().orEmpty() }.getOrDefault(emptyList())
         handler.post {
             val component = ComponentName(this, OrbitListenerService::class.java)
@@ -408,7 +414,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
             Notification.CATEGORY_CALL, Notification.CATEGORY_STOPWATCH, Notification.CATEGORY_ALARM,
         )
         private val ICONS = listOf(
-            "pause" to "pause", "play" to "play", "resume" to "play", "start" to "play", "next" to "next", "skip" to "next",
+            "pause" to "pause", "play" to "play", "resume" to "play", "next" to "next", "skip" to "next",
             "previous" to "previous", "stop" to "stop", "reply" to "reply", "hang up" to "call_end",
             "end call" to "call_end", "decline" to "call_end", "mute" to "mute", "unmute" to "unmute", "dismiss" to "close",
             "cancel" to "close", "like" to "like", "dislike" to "dislike", "shuffle" to "shuffle", "repeat" to "repeat",

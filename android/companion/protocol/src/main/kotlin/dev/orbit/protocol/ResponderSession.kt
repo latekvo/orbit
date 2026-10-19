@@ -236,8 +236,10 @@ class ResponderSession(
         if (req == null || activityId == null || actionId == null) return result(false, "bad_request")
         val activity = hub.get(activityId) ?: return result(false, "unknown_activity")
         val listed = (activity["actions"] as? JsonArray)?.any { (it as? JsonObject)?.str("id") == actionId } == true
-        val seekable = actionId == "media.seek" && (activity["media"] as? JsonObject)?.bool("seekable") == true
-        if (!listed && !seekable) return result(false, "unknown_action")
+        // Transport controls stay valid while the listed set flips (play <-> pause, seekable while
+        // buffering): the desktop may act on an activity version that is a few ms old.
+        val transport = activity["media"] != null && actionId in MEDIA_TRANSPORT
+        if (!listed && !transport) return result(false, "unknown_action")
         try {
             host.performAction(activity, actionId, msg["value"]) { ok, error -> result(ok, error) }
         } catch (e: RuntimeException) {
@@ -354,6 +356,7 @@ class ResponderSession(
     companion object {
         private val nextId = AtomicLong()
         private val ART_FIELDS = listOf("iconKey", "artKey")
+        private val MEDIA_TRANSPORT = setOf("media.play", "media.pause", "media.next", "media.previous", "media.stop", "media.seek")
         val UNPAIRED_ALLOWED = setOf("ready", "pair_request", "pair_decision", "ping", "pong", "bye", "error")
     }
 }

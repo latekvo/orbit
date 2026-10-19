@@ -17,6 +17,16 @@
 
     <uses-feature android:name="android.hardware.bluetooth_le" android:required="false" />
 
+    <!-- App names and icons of the packages whose activities are exported. -->
+    <queries>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+        </intent>
+        <intent>
+            <action android:name="android.media.browse.MediaBrowserService" />
+        </intent>
+    </queries>
+
     <application
         android:name=".OrbitApp"
         android:allowBackup="false"

@@ -200,14 +200,17 @@ class SessionTest {
         c.send("""{"t":"action","req":8,"activity":"media:p","action":"media.seek","value":1234}""")
         assertEquals(json("""{"t":"action_result","req":8,"ok":true}"""), c.recvType("action_result"))
         assertEquals(Triple("media:p", "media.seek", JsonPrimitive(1234) as JsonElement?), host.actions[1])
-        c.send("""{"t":"action","req":9,"activity":"media:p","action":"media.next"}""")
-        assertEquals(json("""{"t":"action_result","req":9,"ok":false,"error":"unknown_action"}"""), c.recvType("action_result"))
+        // Transport controls are accepted on media activities even when not currently listed.
+        c.send("""{"t":"action","req":9,"activity":"media:p","action":"media.pause"}""")
+        assertEquals(json("""{"t":"action_result","req":9,"ok":true}"""), c.recvType("action_result"))
+        c.send("""{"t":"action","req":12,"activity":"media:p","action":"notif.3"}""")
+        assertEquals(json("""{"t":"action_result","req":12,"ok":false,"error":"unknown_action"}"""), c.recvType("action_result"))
         c.send("""{"t":"action","req":10,"activity":"nope","action":"media.play"}""")
         assertEquals("unknown_activity", c.recvType("action_result").str("error"))
         host.actionOutcome = false to "boom"
         c.send("""{"t":"action","req":11,"activity":"media:p","action":"media.play"}""")
         assertEquals(json("""{"t":"action_result","req":11,"ok":false,"error":"boom"}"""), c.recvType("action_result"))
-        assertEquals(3, host.actions.size)
+        assertEquals(4, host.actions.size)
     }
 
     @Test
