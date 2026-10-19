@@ -5,7 +5,7 @@ import time
 import pytest
 from mock_orbitd import GALAXY_TAB, PIXEL_8, MockOrbitd
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QLineEdit, QPushButton, QToolButton
+from PySide6.QtWidgets import QLabel, QLineEdit, QPushButton, QToolButton
 
 from orbit.applet import model
 from orbit.applet.panel import Panel
@@ -177,7 +177,8 @@ def test_stale_cards_keep_layout_freeze_and_disable_then_recover(qtbot, client, 
     assert cards_of(panel, PIXEL_8) == fresh
     assert {k: c.height() for k, c in fresh.items()} == heights
     for card in fresh.values():
-        assert card.stale_badge.isVisibleTo(card) and card.stale_badge.text() == "Reconnecting..."
+        # Said once per device (panel and group header), not on every card.
+        assert not any("reconnecting" in w.text().lower() for w in card.findChildren(QLabel) if w.isVisibleTo(card))
         assert card._dim.isEnabled()
         for b in controls(card):
             assert not b.isEnabled(), b.objectName()
@@ -186,7 +187,7 @@ def test_stale_cards_keep_layout_freeze_and_disable_then_recover(qtbot, client, 
             assert not card.action_strip.more.isEnabled()
     assert not media.seek.isEnabled()
     assert field.isEnabled() and field.text() == "on my way"  # the draft stays editable
-    assert not other.stale and not other.stale_badge.isVisibleTo(other) and not other._dim.isEnabled()
+    assert not other.stale and not other._dim.isEnabled()
     assert all(b.isEnabled() for b in controls(other))
     assert panel.status.fullText() == "Galaxy Tab S9 connected · Pixel 8 reconnecting..."
     headers = [h.text() for h in panel.activities_page._headers]
@@ -212,7 +213,7 @@ def test_stale_cards_keep_layout_freeze_and_disable_then_recover(qtbot, client, 
     qtbot.waitUntil(lambda: not media.stale, timeout=3000)
     assert cards_of(panel, PIXEL_8) == fresh
     for card in fresh.values():
-        assert not card.stale_badge.isVisibleTo(card) and not card._dim.isEnabled()
+        assert not card._dim.isEnabled()
         assert all(b.isEnabled() for b in controls(card))
         assert all(b.toolTip() != "Reconnecting to Pixel 8" for b in controls(card))
     assert media.seek.isEnabled()

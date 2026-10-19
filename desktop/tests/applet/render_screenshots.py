@@ -64,12 +64,17 @@ def main() -> None:
             panel.show()
             wait(1200)
             if scenario == "stale":
-                # The link drops just as play/pause is clicked: stale cards plus the gentle notice.
+                mock.drop_device(PIXEL_8)
+                wait(400)
+                save(panel, f"stale-{mode}")
+                mock.restore_device(PIXEL_8)
+                wait(300)
+                # The link drops just as play/pause is clicked: the action's result is the one in-card line.
                 media = next(c for c in panel.activities_page.cards.values() if c.activity["kind"] == "media")
                 mock.drop_device(PIXEL_8)
                 media.trigger("media.pause")
                 wait(800)
-                save(panel, f"stale-{mode}")
+                save(panel, f"stale-notice-{mode}")
                 panel.show_devices()
                 wait(200)
                 save(panel, f"stale-devices-{mode}")

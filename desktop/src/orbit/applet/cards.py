@@ -345,13 +345,8 @@ class ActivityCard(QFrame):
         f = self.app_name.font()
         f.setPointSizeF(f.pointSizeF() * 0.9)
         self.app_name.setFont(f)
-        self.stale_badge = QLabel("Reconnecting...")
-        self.stale_badge.setObjectName("staleBadge")
-        self.stale_badge.setProperty("role", "badge")
-        self.stale_badge.hide()
         header.addWidget(self.app_icon)
         header.addWidget(self.app_name, 1)
-        header.addWidget(self.stale_badge)
         root.addLayout(header)
 
         # What the phone last reported; dimmed while stale. Actions dim by being disabled.
@@ -478,7 +473,6 @@ class ActivityCard(QFrame):
         elif self._frozen_at is None:
             self._frozen_at = now_ms()
         self._dim.setEnabled(stale)
-        self.stale_badge.setVisible(stale)
         app = a.get("app") or {}
         app_name = app.get("name") or app.get("id") or ""
         accent = self.accent()

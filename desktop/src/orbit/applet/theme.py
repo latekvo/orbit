@@ -83,8 +83,6 @@ QLabel[role="section"] {{ color: {t.muted}; font-size: 11px; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.6px; padding: 6px 4px 0 4px; }}
 QLabel[role="error"] {{ color: {t.danger}; font-size: 12px; }}
 QLabel[role="notice"] {{ color: {t.muted}; font-size: 12px; }}
-QLabel[role="badge"] {{ color: {t.muted}; background: {t.track}; border-radius: 8px; padding: 1px 7px;
-    font-size: 11px; }}
 QLabel[role="chrono"] {{ font-size: 22px; font-weight: 600; }}
 QLabel[role="time"] {{ color: {t.muted}; font-size: 11px; }}
 QLabel[role="sas"] {{ font-size: 44px; font-weight: 700; letter-spacing: 4px; }}
