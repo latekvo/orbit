@@ -1,0 +1,11 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+build/
+.gradle/
+local.properties
+*.iml
+.idea/
+.DS_Store
+.kotlin/

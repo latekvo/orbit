@@ -1,0 +1,52 @@
+{
+  "description": "Orbit v1 deterministic handshake. Private keys are big-endian P-256 scalars. Bodies are exact frame bodies (UTF-8). Implementations must reproduce every derived value.",
+  "private_keys_hex": {
+    "static_i": "dfed2f72da22ea63d0b065c92a2701b1aa06e50ea83ef98ac5386c352547fe81",
+    "eph_i": "a5bea401e2442beaf26358661914800b568d81ff59265eb0050ec1f235a2ed6d",
+    "static_r": "7fa70d19558f4eef047025b279af34facccc171df849a22b78333baec62e9aed",
+    "eph_r": "a5f36433a5fe7129561249f3641eece97632215c9d43c18c4372b012e718e7b3"
+  },
+  "public_keys_b64": {
+    "static_i": "BHOYzfRZkgKYJJjphuaZzx4pybaetsx79/909hLZ1bACVcBYTjhtnEopb0udR3vkSAsDTDrHQDVVzzpFc4WKWTk=",
+    "eph_i": "BP5hyE/bTofW2mZvSF410gcmFNyheeCTIf2x9iSHC/H/UC+M+t3xXWf9w+SU7j/JWu55nBuhwol4iBCr/L8W8xM=",
+    "static_r": "BMwbYqNuBpaFfRpLa9SIpgD06U60b0cP+5SxHBIOM+miqynqkcb2YUzbG+CYT829eNWR38W7U/h9R2sDz23NeLw=",
+    "eph_r": "BKwsThKzUoTPqRdK8+H/tr05TEqD73N3RV4dgth59/ji3V9RhygYOce2c7Pys0FL/QpzSOLD9UcSSbxOAQxCTfM="
+  },
+  "device_id_initiator": "7e81bcae47d5cd674c12ab6ed2bd5e38",
+  "device_id_responder": "8838d0708ad8fa6233ecfd840e74d9b4",
+  "nonce_initiator_hex": "000102030405060708090a0b0c0d0e0f",
+  "nonce_responder_hex": "101112131415161718191a1b1c1d1e1f",
+  "commit_body": "{\"t\":\"commit\",\"v\":1,\"c\":\"RpMA0x7qn+5mtOstKXYhUliQwxwK3R8XfKttPC1P/H4=\"}",
+  "hello_responder_body": "{\"t\":\"hello\",\"v\":1,\"role\":\"responder\",\"id\":\"8838d0708ad8fa6233ecfd840e74d9b4\",\"name\":\"Test Phone\",\"platform\":\"android\",\"static\":\"BMwbYqNuBpaFfRpLa9SIpgD06U60b0cP+5SxHBIOM+miqynqkcb2YUzbG+CYT829eNWR38W7U/h9R2sDz23NeLw=\",\"eph\":\"BKwsThKzUoTPqRdK8+H/tr05TEqD73N3RV4dgth59/ji3V9RhygYOce2c7Pys0FL/QpzSOLD9UcSSbxOAQxCTfM=\",\"nonce\":\"EBESExQVFhcYGRobHB0eHw==\"}",
+  "hello_initiator_body": "{\"t\":\"hello\",\"v\":1,\"role\":\"initiator\",\"id\":\"7e81bcae47d5cd674c12ab6ed2bd5e38\",\"name\":\"Test Laptop\",\"platform\":\"macos\",\"static\":\"BHOYzfRZkgKYJJjphuaZzx4pybaetsx79/909hLZ1bACVcBYTjhtnEopb0udR3vkSAsDTDrHQDVVzzpFc4WKWTk=\",\"eph\":\"BP5hyE/bTofW2mZvSF410gcmFNyheeCTIf2x9iSHC/H/UC+M+t3xXWf9w+SU7j/JWu55nBuhwol4iBCr/L8W8xM=\",\"nonce\":\"AAECAwQFBgcICQoLDA0ODw==\"}",
+  "transcript_hash_hex": "ae4a060b564b6e377ac8d6aff2e7cb75649e75758896f4fbf5aaeb8c3cb72102",
+  "dh_ee_hex": "25551c7a139bf5c3f5c4b70e19f41e790e017436fd1dccfd496b84530a712358",
+  "dh_ss_hex": "924e583b3ce31f94d551a3af2e36def3933adc473eb6e75a2981a173dce5f600",
+  "k_i2r_hex": "ba090066fe23a12d0253feea25d1061426ce9c3abb9e32b74127a76a02edff80",
+  "k_r2i_hex": "8b92947f4270a6939a80d85bc262f59e0153598395a8fb0094e67c67ba158a17",
+  "sas": "314710",
+  "records_i2r": [
+    {
+      "counter": 0,
+      "plaintext": "{\"t\":\"ready\",\"paired\":false,\"now\":1760000000000}",
+      "record_hex": "24b9cc82a6afe59dcf632e01808936a5370a9309013b5aa18a4b7e99bcb96087d473ea08633e4543a1f40fd36671f83a9cd337d55189d8af302ddc068962fe9e"
+    },
+    {
+      "counter": 1,
+      "plaintext": "{\"t\":\"pair_request\"}",
+      "record_hex": "4538ad97d4296e572879942fc32b6afa72c0196379ac4da84ccec0c7ef484e0d7bac3021"
+    }
+  ],
+  "records_r2i": [
+    {
+      "counter": 0,
+      "plaintext": "{\"t\":\"ready\",\"paired\":false,\"now\":1760000000001}",
+      "record_hex": "61c1faceec6fb5b0c90421e001c563b8178e3b64f2b90a4804dddbb4cdce7c1452f194f5b6ff5cdb16221ea674cd17b6cfdf24ae84e692445f9d41d8218c4362"
+    },
+    {
+      "counter": 1,
+      "plaintext": "{\"t\":\"pair_decision\",\"accepted\":true}",
+      "record_hex": "2cc7f6dbaf54643a6d1e69078581adb4af2b719f4fe2eecadd194c6c1cfebebddd2404996825591637d4a0c7992ae2984495553650"
+    }
+  ]
+}
