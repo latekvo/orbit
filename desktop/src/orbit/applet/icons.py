@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import functools
+
 from PySide6.QtCore import QByteArray, QRect, QRectF, QSize, Qt
 from PySide6.QtGui import QColor, QIcon, QIconEngine, QPainter, QPixmap
 from PySide6.QtSvg import QSvgRenderer
@@ -75,8 +77,24 @@ def svg_for(name: str, color: str) -> bytes | None:
     if path is None:
         return None
     return (
-        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="{color}" d="{path}"/></svg>'
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+        f'<path fill="{color}" transform="{_fit(name)}" d="{path}"/></svg>'
     ).encode()
+
+
+GLYPH_INSET = 2.0  # Material glyphs keep 2 units clear on each side; a label beside one relies on it
+
+
+@functools.cache
+def _fit(name: str) -> str:
+    """Transform that shrinks a glyph drawn edge to edge (call_end, dislike) into the usual inset."""
+    svg = f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path id="g" d="{PATHS[name]}"/></svg>'
+    ink = QSvgRenderer(QByteArray(svg.encode())).boundsOnElement("g")
+    room = 24 - 2 * GLYPH_INSET
+    if ink.left() >= GLYPH_INSET and ink.right() <= 24 - GLYPH_INSET:
+        return ""
+    k = min(1.0, room / ink.width())
+    return f"translate({12 - k * ink.center().x():.3f} {12 - k * 12:.3f}) scale({k:.4f})"
 
 
 class _SvgEngine(QIconEngine):
@@ -108,3 +126,13 @@ class _SvgEngine(QIconEngine):
 def icon(name: str, color: QColor | str) -> QIcon | None:
     data = svg_for(name, QColor(color).name())
     return QIcon(_SvgEngine(data)) if data else None
+
+
+def spinner(color: QColor | str, angle: int) -> QIcon:
+    """One frame of a busy indicator: a three-quarter ring rotated by `angle` degrees."""
+    data = (
+        f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g transform="rotate({angle} 12 12)">'
+        f'<path d="M12 5a7 7 0 1 1-7 7" fill="none" stroke="{QColor(color).name()}" stroke-width="2.4" '
+        f'stroke-linecap="round"/></g></svg>'
+    ).encode()
+    return QIcon(_SvgEngine(data))

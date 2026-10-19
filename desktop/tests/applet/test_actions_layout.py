@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 from applet_helpers import make_mock
 from PySide6.QtCore import QPoint, QRect, Qt
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QToolButton, QWidget
 
 from orbit.applet import actions as acts
@@ -152,19 +153,32 @@ def assert_fits(panel):
 
 
 def reach(card, action_id):
-    """Fire `action_id` the way a user can: its visible button, else its overflow menu entry."""
+    """Fire `action_id` the way a user can: the card's tap target for `open`, else its visible
+    button, else its overflow menu entry."""
+    if action_id == "open":
+        assert card.title.cursor().shape() == Qt.CursorShape.PointingHandCursor
+        QTest.mouseClick(card.title, Qt.MouseButton.LeftButton)
+        return "tap"
     for btn in card.findChildren(QToolButton, f"action:{action_id}"):
         if btn.isVisibleTo(card):
             btn.click()
             return "button"
-    for strip in (card.transport_strip, card.secondary_strip):
-        if strip is not None and strip.more.isVisibleTo(card):
-            for entry in strip.populate_menu():
-                if entry.data() == action_id:
-                    assert entry.isEnabled()
-                    entry.trigger()
-                    return "menu"
+    strip = card.action_strip
+    if strip is not None and strip.more.isVisibleTo(card):
+        for entry in strip.populate_menu():
+            if entry.data() == action_id:
+                assert entry.isEnabled()
+                entry.trigger()
+                return "menu"
     raise AssertionError(f"{action_id} is not reachable")
+
+
+def inline_ids(card):
+    return [b.property("actionId") for b in card.action_strip.buttons() if b.isVisibleTo(card)]
+
+
+def menu_ids(card):
+    return [e.data() for e in card.action_strip.populate_menu()]
 
 
 def run_all_actions(qtbot, mock, card):
@@ -182,44 +196,117 @@ def run_all_actions(qtbot, mock, card):
 # -- tests -----------------------------------------------------------------------------------
 
 
-def test_live_metrolist_payload_fits_and_every_action_is_reachable(qtbot, sock_path):
-    mock, client, panel = setup(qtbot, sock_path, copy.deepcopy(LIVE), devices=[LIVE_DEVICE])
+def flagged(activities):
+    """The live capture as a phone that sets Action.overflow would send it."""
+    out = copy.deepcopy(activities)
+    hidden = {
+        "media.stop",
+        "media.custom.TOGGLE_SHUFFLE",
+        "media.custom.TOGGLE_START_RADIO",
+        "media.custom.ADD_TO_TARGET_PLAYLIST",
+    }
+    for x in out[0]["actions"]:
+        x["overflow"] = x["id"] in hidden
+    return out
+
+
+def test_overflow_flags_decide_inline_buttons(qtbot, sock_path):
+    mock, client, panel = setup(qtbot, sock_path, flagged(LIVE), devices=[LIVE_DEVICE])
     try:
         card = next(iter(panel.activities_page.cards.values()))
         assert_fits(panel)
-        assert card.duration.isVisibleTo(card) and card.duration.text() == "4:12"
-        # Transport is its own prominent row; nothing in it is a text pill.
-        assert [b.property("actionId") for b in card.transport_strip.buttons()] == [
+        assert inline_ids(card) == [
             "media.previous",
             "media.pause",
             "media.next",
-        ]
-        for aid in (
             "media.custom.TOGGLE_LIKE",
             "media.custom.TOGGLE_REPEAT_MODE",
+        ]
+        assert len({b.geometry().center().y() for b in card.action_strip.buttons()}) == 1  # one row
+        assert menu_ids(card) == [
+            "media.stop",
             "media.custom.TOGGLE_SHUFFLE",
             "media.custom.TOGGLE_START_RADIO",
             "media.custom.ADD_TO_TARGET_PLAYLIST",
-            "media.stop",
-        ):
-            btn = card.findChild(QToolButton, f"action:{aid}")
-            assert btn is not None and btn.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
-            assert btn.text() == "" and not btn.icon().isNull()
+        ]
+        assert card.findChild(QToolButton, "action:open") is None
+        for w in (card.app_icon, card.app_name, card.art):
+            assert w.toolTip() == "Open on phone"
+            assert w.cursor().shape() == Qt.CursorShape.PointingHandCursor
         run_all_actions(qtbot, mock, card)
     finally:
         client.stop()
         mock.stop()
 
 
-def test_narrow_panel_moves_actions_into_overflow_menu(qtbot, sock_path):
+def test_unflagged_live_capture_fits_and_is_reachable(qtbot, sock_path):
+    """Older phones send no overflow flags: stop and open still leave the inline row."""
     mock, client, panel = setup(qtbot, sock_path, copy.deepcopy(LIVE), devices=[LIVE_DEVICE])
+    try:
+        card = next(iter(panel.activities_page.cards.values()))
+        assert_fits(panel)
+        assert card.duration.isVisibleTo(card) and card.duration.text() == "4:12"
+        assert [b.property("actionId") for b in card.action_strip.buttons()] == [
+            "media.previous",
+            "media.pause",
+            "media.next",
+            "media.custom.TOGGLE_LIKE",
+            "media.custom.TOGGLE_REPEAT_MODE",
+            "media.custom.TOGGLE_SHUFFLE",
+            "media.custom.TOGGLE_START_RADIO",
+            "media.custom.ADD_TO_TARGET_PLAYLIST",
+        ]
+        for btn in card.action_strip.buttons():
+            assert btn.toolButtonStyle() == Qt.ToolButtonStyle.ToolButtonIconOnly
+            assert btn.text() == "" and not btn.icon().isNull()
+        assert "media.stop" in menu_ids(card)
+        assert card.findChild(QToolButton, "action:open") is None
+        more_y = card.action_strip.more.geometry().center().y()
+        assert any(
+            b.isVisibleTo(card) and b.geometry().center().y() == more_y for b in card.action_strip.buttons()
+        )  # "..." never sits alone on a row
+        run_all_actions(qtbot, mock, card)
+    finally:
+        client.stop()
+        mock.stop()
+
+
+def test_dismiss_goes_to_menu_and_header_is_inert_without_open(qtbot, sock_path):
+    act = {
+        "device": LIVE_DEVICE["id"],
+        "id": "notif:x",
+        "kind": "generic",
+        "app": {"id": "x", "name": "X"},
+        "title": "Build finished",
+        "actions": [{"id": "notif.0", "label": "Retry"}, {"id": "dismiss", "label": "Dismiss"}],
+        "updatedMs": 0,
+    }
+    mock, client, panel = setup(qtbot, sock_path, [act], devices=[LIVE_DEVICE])
+    try:
+        card = next(iter(panel.activities_page.cards.values()))
+        assert inline_ids(card) == ["notif.0"] and menu_ids(card) == ["dismiss"]
+        assert card.title.cursor().shape() == Qt.CursorShape.ArrowCursor
+        mock.clear_recorded()
+        QTest.mouseClick(card.title, Qt.MouseButton.LeftButton)
+        qtbot.wait(300)
+        assert mock.actions() == []
+        reach(card, "dismiss")
+        qtbot.waitUntil(
+            lambda: mock.actions() == [{"device": act["device"], "activity": "notif:x", "action": "dismiss"}]
+        )
+    finally:
+        client.stop()
+        mock.stop()
+
+
+def test_narrow_panel_moves_actions_into_overflow_menu(qtbot, sock_path):
+    mock, client, panel = setup(qtbot, sock_path, flagged(LIVE), devices=[LIVE_DEVICE])
     try:
         panel.setFixedWidth(250)
         qtbot.wait(150)
         card = next(iter(panel.activities_page.cards.values()))
         assert_fits(panel)
-        assert card.secondary_strip.more.isVisibleTo(card)
-        assert any(e.data() for e in card.secondary_strip.populate_menu())
+        assert card.action_strip.more.isVisibleTo(card)
         run_all_actions(qtbot, mock, card)
     finally:
         client.stop()
@@ -236,8 +323,8 @@ def test_crowded_scenario_fits_and_is_reachable(qtbot, sock_path):
         chat = cards["generic"]
         assert chat.title.toolTip() == chat.activity["title"]
         assert chat.title.text() != chat.activity["title"]  # elided
-        assert chat.secondary_strip.more.isVisibleTo(chat)  # six long pills don't fit
-        assert len([b for b in chat.secondary_strip.buttons() if b.isVisibleTo(chat)]) >= 3  # two rows
+        assert chat.action_strip.more.isVisibleTo(chat)  # six long pills don't fit
+        assert len([b for b in chat.action_strip.buttons() if b.isVisibleTo(chat)]) >= 3  # two rows
         assert chat.text.text().count("\n") == 2 and chat.text.text().endswith("\u2026")
         assert chat.text.toolTip() == chat.activity["text"]
         for card in cards.values():

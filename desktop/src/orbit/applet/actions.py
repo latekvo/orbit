@@ -128,12 +128,12 @@ def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleS
     "Like", "Enable shuffle" = currently off), and "<thing> mode X" / "<thing>: X" names the
     current state X. A bare "Shuffle on" may mean either, so it stays neutral."""
     glyph = glyph or icon_for(action)
-    if glyph not in TOGGLE_GLYPHS:
-        return None
     label = " ".join(str(action.get("label") or "").lower().split())
     mode = re.fullmatch(r"[a-z ]+?(?: mode\s*:?|\s*:)\s*([a-z0-9]+)", label)
     from_label: ToggleState = _MODE_STATES.get(mode.group(1)) if mode else None
-    if from_label is None and not mode:
+    if glyph not in TOGGLE_GLYPHS:
+        from_label = None  # labels are only read for known toggles; `active` applies to any action
+    elif from_label is None and not mode:
         if re.match(r"(remove|undo|unlike|undislike|disable|deactivate|stop)\b|turn .+ off$", label):
             from_label = "active"
         elif re.match(r"(enable|activate|start)\b|turn .+ on$|add to (liked|favou?rites)", label) or re.fullmatch(
@@ -146,6 +146,33 @@ def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleS
             return "one"
         return "active" if active else "inactive"
     return from_label
+
+
+Placement = Literal["inline", "menu", "open", "input"]
+
+
+def placements(actions: list[Mapping[str, Any]], media: bool) -> list[Placement]:
+    """Where each action goes, mirroring what the phone itself shows.
+
+    `open` is the card's tap target and `dismiss` lives in the menu. Producers mark actions their
+    own UI keeps out of sight with `overflow: true`; when none carries the field (older phones),
+    `media.stop` goes to the menu too. Media cards are icon-only, so label-only media actions
+    go to the menu as well."""
+    flagged = any("overflow" in a for a in actions)
+    out: list[Placement] = []
+    for a in actions:
+        aid = a.get("id")
+        if a.get("input"):
+            out.append("input")
+        elif aid == "open":
+            out.append("open")
+        elif aid == "dismiss" or a.get("overflow") is True or (not flagged and aid == "media.stop"):
+            out.append("menu")
+        elif media and icon_for(a) is None:
+            out.append("menu")
+        else:
+            out.append("inline")
+    return out
 
 
 def slot_key(action: Mapping[str, Any], media: bool) -> str:

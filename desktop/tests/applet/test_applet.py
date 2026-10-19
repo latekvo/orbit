@@ -288,7 +288,7 @@ def test_pending_requests_fail_on_disconnect(qtbot, client, mock):
     qtbot.wait(200)
     mock.stop()
     qtbot.waitUntil(lambda: bool(results), timeout=3000)
-    assert results == [(None, {"code": "not_connected", "message": "orbitd is not running"})]
+    assert results == [(None, {"code": model.ORBITD_DOWN, "message": "orbitd is not running"})]
 
 
 def test_starts_without_daemon_then_connects(qtbot, sock_path):

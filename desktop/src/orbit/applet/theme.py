@@ -109,6 +109,7 @@ QLabel[role="heading"] {{ font-size: 15px; font-weight: 700; }}
 QLabel[role="section"] {{ color: {t.muted}; font-size: 11px; font-weight: 700;
     text-transform: uppercase; letter-spacing: 0.6px; padding: 6px 4px 0 4px; }}
 QLabel[role="error"] {{ color: {t.danger}; font-size: 12px; }}
+QLabel[role="notice"] {{ color: {t.muted}; font-size: 12px; }}
 QLabel[role="chrono"] {{ font-size: 22px; font-weight: 600; }}
 QLabel[role="time"] {{ color: {t.muted}; font-size: 11px; }}
 QLabel[role="sas"] {{ font-size: 44px; font-weight: 700; letter-spacing: 4px; }}
@@ -122,9 +123,12 @@ QToolButton {{ color: {t.text}; background: transparent; border: none; border-ra
 QToolButton:hover {{ background: {t.hover}; }}
 QToolButton:pressed {{ background: {t.border}; }}
 QToolButton:disabled {{ color: {t.muted}; }}
+QToolButton[pending="true"] {{ color: {t.muted}; }}
 QToolButton[role="pill"] {{ background: {t.field}; border: 1px solid {t.border}; padding: 3px 8px;
     font-size: 12px; }}
 QToolButton[role="pill"]:hover {{ background: {t.hover}; }}
+QToolButton[role="pill"][toggleState="active"], QToolButton[role="pill"][toggleState="one"] {{
+    color: {t.accent}; border-color: {t.accent}; background: {t.mix(t.accent, 0.12)}; }}
 QToolButton[role="media"] {{ border-radius: 18px; padding: 6px; }}
 QToolButton[role="primary"] {{ border-radius: 20px; padding: 8px; }}
 QPushButton {{ color: {t.text}; background: {t.card}; border: 1px solid {t.border};

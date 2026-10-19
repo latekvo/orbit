@@ -395,8 +395,18 @@ class MockOrbitd:
         self.socket_path = socket_path
         self.evolve = evolve
         self.tick_s = tick_s
-        self.fail_next_action: str | None = None
+        # A str fails the next action with {"ok": false, "error": str}; a dict answers it with that error.
+        self.fail_next_action: str | dict | None = None
+        # Accept connections and requests but never answer (a wedged orbitd).
+        self.unresponsive = False
         self.action_delay_s: float = 0.0
+        self.method_delay_s: dict[str, float] = {}  # other methods answered this late
+        # How long activities.action waits for a "reconnecting" device (orbitd: 5 s).
+        self.reconnect_hold_s: float = 5.0
+        # How long a dropped device stays "reconnecting" before going "offline" (orbitd: 15 s).
+        self.reconnect_grace_s: float = 15.0
+        self._reconnecting: dict[str, str | None] = {}  # device id -> transport to restore
+        self._grace: dict[str, asyncio.TimerHandle] = {}
         # Called on the loop thread with each received {"method", "params"}.
         self.on_request: Callable[[dict], None] | None = None
 
@@ -612,16 +622,17 @@ class MockOrbitd:
                 "rate": 1.0,
                 "seekable": True,
             },
+            # What the phone shows inline: prev/pause/next/like/repeat; the rest is overflow.
             "actions": [
                 _act("Previous", "previous", "media.previous"),
                 _act("Pause", "pause", "media.pause"),
                 _act("Next", "next", "media.next"),
-                _act("Stop", "stop", "media.stop"),
-                {"id": "media.custom.TOGGLE_LIKE", "label": "Remove like"},
-                _act("Repeat mode off", "repeat", "media.custom.TOGGLE_REPEAT_MODE"),
-                _act("Shuffle on", "shuffle", "media.custom.TOGGLE_SHUFFLE"),
-                {"id": "media.custom.TOGGLE_START_RADIO", "label": "Start radio"},
-                {"id": "media.custom.ADD_TO_TARGET_PLAYLIST", "label": "Quick-add destination"},
+                _act("Stop", "stop", "media.stop", overflow=True),
+                {"id": "media.custom.TOGGLE_LIKE", "label": "Remove like", "overflow": False},
+                _act("Repeat mode off", "repeat", "media.custom.TOGGLE_REPEAT_MODE", overflow=False),
+                _act("Shuffle on", "shuffle", "media.custom.TOGGLE_SHUFFLE", overflow=True),
+                {"id": "media.custom.TOGGLE_START_RADIO", "label": "Start radio", "overflow": True},
+                {"id": "media.custom.ADD_TO_TARGET_PLAYLIST", "label": "Quick-add destination", "overflow": True},
                 {"id": "open", "label": "Open"},
             ],
             "updatedMs": now,
@@ -731,9 +742,18 @@ class MockOrbitd:
     def _device(self, device_id: str) -> dict | None:
         return next((d for d in self._devices if d["id"] == device_id), None)
 
+    def _listed_devices(self) -> list[dict]:
+        out = copy.deepcopy(self._devices)
+        for d in out:
+            d["state"] = (
+                "reconnecting" if d["id"] in self._reconnecting else "connected" if d["connected"] else "offline"
+            )
+        return out
+
     def _visible_activities(self) -> list[dict]:
-        hidden = {d["id"] for d in self._devices if not d["connected"]}
-        return [a for a in self._acts if a["device"] not in hidden]
+        """Connected devices' activities, plus a reconnecting device's last ones marked stale."""
+        hidden = {d["id"] for d in self._devices if not d["connected"] and d["id"] not in self._reconnecting}
+        return [{**a, "stale": a["device"] in self._reconnecting} for a in self._acts if a["device"] not in hidden]
 
     def _find_act(self, device_id: str, activity_id: str) -> dict | None:
         return next((a for a in self._acts if a["device"] == device_id and a["id"] == activity_id), None)
@@ -744,7 +764,7 @@ class MockOrbitd:
 
     def _snapshot(self) -> dict[str, Any]:
         return copy.deepcopy(
-            {"devices": self._devices, "pairing": self._pairings, "activities": self._visible_activities()}
+            {"devices": self._listed_devices(), "pairing": self._pairings, "activities": self._visible_activities()}
         )
 
     def _event(self, name: str, snap: dict) -> dict:
@@ -795,7 +815,48 @@ class MockOrbitd:
 
     @property
     def devices(self) -> list[dict]:
-        return self._on_loop(lambda: copy.deepcopy(self._devices))
+        return self._on_loop(self._listed_devices)
+
+    def drop_device(self, device_id: str) -> None:
+        """Simulate a dropped session: "reconnecting" with its activities kept but stale, then
+        "offline" after reconnect_grace_s unless restore_device comes first."""
+
+        def apply():
+            dev = self._device(device_id)
+            if dev is None or not dev["connected"]:
+                raise ValueError(f"{device_id} is not connected")
+            self._reconnecting[device_id] = dev["transport"]
+            dev.update(connected=False, transport=None)
+            self._grace[device_id] = self._loop.call_later(
+                self.reconnect_grace_s, lambda: self._mutate(lambda: self._end_reconnect(device_id))
+            )
+
+        self._on_loop(lambda: self._mutate(apply))
+
+    def _end_reconnect(self, device_id: str) -> str | None:
+        handle = self._grace.pop(device_id, None)
+        if handle is not None:
+            handle.cancel()
+        return self._reconnecting.pop(device_id, None)
+
+    def restore_device(self, device_id: str) -> None:
+        """The phone is back: fresh snapshot, nothing stale."""
+
+        def apply():
+            dev = self._device(device_id)
+            if device_id not in self._reconnecting:
+                raise ValueError(f"{device_id} is not reconnecting")
+            dev.update(connected=True, transport=self._end_reconnect(device_id) or "lan")
+            now = now_ms()
+            for a in self._acts:
+                if a["device"] == device_id:
+                    a["updatedMs"] = now
+
+        self._on_loop(lambda: self._mutate(apply))
+
+    def expire_device(self, device_id: str) -> None:
+        """End the grace period now: "offline", its activities gone from the list."""
+        self._on_loop(lambda: self._mutate(lambda: self._end_reconnect(device_id)))
 
     @property
     def activities(self) -> list[dict]:
@@ -971,17 +1032,39 @@ class MockOrbitd:
             self._requests.append(record)
         if self.on_request:
             self.on_request(copy.deepcopy(record))
+        if self.unresponsive:
+            return
 
         if method == "activities.action":
             fail, self.fail_next_action = self.fail_next_action, None
+            device = (params or {}).get("device") if isinstance(params, dict) else None
+            if device in self._reconnecting:
+                task = asyncio.create_task(self._answer_after_reconnect(conn, req_id, method, params, fail))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+                return
             if self.action_delay_s > 0:
                 task = asyncio.create_task(self._answer(conn, req_id, method, params, fail, self.action_delay_s))
                 self._tasks.add(task)
                 task.add_done_callback(self._tasks.discard)
                 return
             await self._answer(conn, req_id, method, params, fail, 0)
+        elif self.method_delay_s.get(method):
+            task = asyncio.create_task(self._answer(conn, req_id, method, params, None, self.method_delay_s[method]))
+            self._tasks.add(task)
+            task.add_done_callback(self._tasks.discard)
         else:
             await self._answer(conn, req_id, method, params, None, 0)
+
+    async def _answer_after_reconnect(self, conn, req_id, method, params, fail) -> None:
+        """orbitd holds actions for a reconnecting device up to 5 s, then gives up."""
+        deadline = time.monotonic() + self.reconnect_hold_s
+        while params["device"] in self._reconnecting and time.monotonic() < deadline:  # noqa: ASYNC110 - polls test-mock state
+            await asyncio.sleep(0.05)
+        if params["device"] in self._reconnecting:
+            conn.send({"id": req_id, "error": {"code": "not_connected", "message": "reconnecting"}})
+            return
+        await self._answer(conn, req_id, method, params, fail, 0)
 
     async def _answer(self, conn, req_id, method, params, fail, delay) -> None:
         if delay:
@@ -997,6 +1080,9 @@ class MockOrbitd:
                 snap = self._snapshot()
                 for name in ("devices", "pairing", "activities"):
                     conn.send(self._event(name, snap))
+                return
+            if method == "activities.action" and isinstance(fail, dict):
+                conn.send({"id": req_id, "error": fail})
                 return
             if method == "activities.action" and fail is not None:
                 result: Any = {"ok": False, "error": fail}
@@ -1103,6 +1189,7 @@ class MockOrbitd:
                 raise ApiError("not_found", "unknown device")
             dev["connected"] = False
             dev["transport"] = None
+            self._end_reconnect(device_id)
             self._pairings = [p for p in self._pairings if p["deviceId"] != device_id]
             return True
 
@@ -1294,6 +1381,8 @@ class MockOrbitd:
     def _tick(self) -> None:
         now = now_ms()
         for act in list(self._acts):
+            if act["device"] in self._reconnecting:
+                continue  # orbitd hears nothing from a dropped phone
             extra = self._extra.get((act["device"], act["id"]))
             if not extra:
                 continue
@@ -1351,6 +1440,13 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--pairing-on-start", action="store_true")
     parser.add_argument("--no-evolve", dest="evolve", action="store_false")
     parser.add_argument("--tick", type=float, default=1.0, metavar="SECONDS")
+    parser.add_argument(
+        "--flap",
+        type=float,
+        default=0,
+        metavar="SECONDS",
+        help='every SECONDS drop Pixel 8 to "reconnecting" for half that long',
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 
@@ -1367,6 +1463,12 @@ def main(argv: list[str] | None = None) -> int:
         signal.signal(sig, lambda *_: done.set())
     mock.start()
     try:
+        if args.flap > 0:
+            while not done.wait(args.flap / 2):
+                if PIXEL_8 in (d["id"] for d in mock.devices if d["state"] == "connected"):
+                    mock.drop_device(PIXEL_8)
+                elif PIXEL_8 in (d["id"] for d in mock.devices if d["state"] == "reconnecting"):
+                    mock.restore_device(PIXEL_8)
         while not done.wait(0.5):
             pass
     finally:
