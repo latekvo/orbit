@@ -201,8 +201,15 @@ its own clock. Media positions are valid at the message's `now`.
 
 ```jsonc
 {"id": "media.pause", "label": "Pause", "icon": "pause",
- "input": {"kind": "text", "label": "Reply"}}   // input optional
+ "input": {"kind": "text", "label": "Reply"},   // input optional
+ "overflow": true}                              // optional, default false
 ```
+
+`overflow: true` means the phone's own UI does not show this action as a button. Consumers
+SHOULD put such actions behind an overflow ("More") menu rather than inline, keeping the
+listed order. `open` is the activity's primary tap target: bind it to clicking the card or
+its header, not to a button. `dismiss` belongs in the overflow menu whether or not it is
+marked.
 
 Well-known `icon` values: `play`, `pause`, `next`, `previous`, `stop`, `close`, `reply`,
 `add`, `remove`, `check`, `mute`, `unmute`, `like`, `dislike`, `shuffle`, `repeat`,
