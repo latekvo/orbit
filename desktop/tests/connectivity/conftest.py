@@ -1,15 +1,30 @@
 import os
 import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 
 import pytest
 
-from .harness import CLASSPATH_FILE, FaultProxy, JvmPhone, Orbitd
+from .harness import CLASSPATH_FILE, JAVA_HOME, REPO, FaultProxy, JvmPhone, Orbitd
 
 # Real processes and minutes of wall clock: opt in with ORBIT_CONNECTIVITY=1.
 if not os.environ.get("ORBIT_CONNECTIVITY"):
     collect_ignore_glob = ["test_*.py"]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def fresh_harness():
+    """Recompile the JVM harness (and the protocol code it runs) so a stale build is never tested."""
+    if os.environ.get("ORBIT_HARNESS_CLASSPATH"):
+        return  # prebuilt (Docker)
+    gradlew = REPO / "android/companion/gradlew"
+    subprocess.run(
+        [str(gradlew), "-q", ":protocol:harnessClasspath"],
+        cwd=gradlew.parent,
+        env={**os.environ, "JAVA_HOME": JAVA_HOME},
+        check=True,
+    )
 
 
 @pytest.fixture
