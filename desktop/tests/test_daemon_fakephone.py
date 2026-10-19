@@ -6,7 +6,7 @@ import hashlib
 import os
 import stat
 
-from conftest import until
+from daemon_helpers import until
 
 from orbit.store import PeerStore
 

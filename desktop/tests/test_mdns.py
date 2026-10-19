@@ -5,7 +5,7 @@ import os
 import socket
 
 import pytest
-from conftest import RawPhone, pin_in, until
+from daemon_helpers import RawPhone, pin_in, until
 from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
 
 from orbit.daemon.discovery import SERVICE_TYPE

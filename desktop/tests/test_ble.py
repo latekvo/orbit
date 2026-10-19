@@ -5,7 +5,7 @@ from types import SimpleNamespace
 
 import bleak
 import pytest
-from conftest import RawPhone, pin_in, until
+from daemon_helpers import RawPhone, pin_in, until
 
 from orbit.client import ApiError
 from orbit.daemon.ble import RX_UUID, TX_UUID, chunk_size
@@ -218,3 +218,16 @@ async def test_ble_responder_must_match_advertised_prefix(make_daemon, api_for, 
     assert "disconnect" in gatt.instances[0].log
     assert set(daemon.devices) == {prefix} and daemon.devices[prefix].provisional
     assert not daemon.store.peers and await api.call("pairing.list") == []
+
+
+async def test_provisional_entry_merges_into_mdns_discovered_device(make_daemon, api_for, gatt):
+    phone_id = device_id(KeyPair.generate().public)
+    daemon = await make_daemon()
+    api = await api_for(daemon)
+    daemon.on_ble(phone_id[:16], SimpleNamespace(address="DD"), "Pixel D")
+    daemon.on_lan(
+        "Pixel D._orbit._tcp.local.",
+        {"id": phone_id, "name": "Pixel D", "platform": "android", "addresses": [("127.0.0.1", 9)]},
+    )
+    (dev,) = await api.call("devices.list")
+    assert (dev["id"], dev["provisional"], dev["discovered"]) == (phone_id, False, ["lan", "ble"])

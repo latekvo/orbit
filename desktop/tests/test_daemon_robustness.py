@@ -5,7 +5,7 @@ import base64
 import hashlib
 
 import pytest
-from conftest import RawPhone, pin_in, until
+from daemon_helpers import RawPhone, pin_in, until
 
 import orbit.daemon.core as core
 from orbit.client import ApiError
