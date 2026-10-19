@@ -1,8 +1,9 @@
 """Qt-free presentation rules for actions: which glyph, which slot, which toggle state.
 
 Apps relabel toggle actions on every state change ("Like" <-> "Remove like", "Shuffle on" <->
-"Shuffle off") while keeping the id, so the id decides the glyph and the slot, and the label
-only refines the toggle state shown on that glyph.
+"Shuffle off") while keeping the id, so the id decides the glyph and the slot; the toggle
+state shown on that glyph comes from the action's `active` field, else from labels whose
+meaning is unambiguous.
 """
 
 from __future__ import annotations
@@ -81,29 +82,36 @@ def icon_for(action: Mapping[str, Any]) -> str | None:
     return None
 
 
-def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleState:
-    """Current on/off state of a toggle, inferred from its label; None when ambiguous.
+_MODE_STATES = {"off": "inactive", "none": "inactive", "one": "one", "single": "one", "1": "one",
+                "track": "one", "song": "one", "all": "active", "on": "active", "queue": "active",
+                "playlist": "active"}
 
-    Labels name the current state ("Shuffle on", "Repeat mode one") or, for likes, the way
-    out of it ("Remove like" = liked)."""
+
+def toggle_state(action: Mapping[str, Any], glyph: str | None = None) -> ToggleState:
+    """Current on/off state of a toggle; None unless it is unambiguous.
+
+    An explicit `active` field wins. Otherwise only labels whose meaning is fixed count:
+    verb-led ones name the action to take ("Remove like", "Turn shuffle off" = currently on;
+    "Like", "Enable shuffle" = currently off), and "<thing> mode X" / "<thing>: X" names the
+    current state X. A bare "Shuffle on" may mean either, so it stays neutral."""
     glyph = glyph or icon_for(action)
     if glyph not in TOGGLE_GLYPHS:
         return None
-    label = str(action.get("label") or "").lower().strip()
-    if glyph in ("like", "dislike"):
-        if re.search(r"^(remove|undo|unlike|un-like|undislike)\b|\b(liked|disliked|favou?rited)$", label):
-            return "active"
-        if re.fullmatch(r"(add )?(dis)?like|(add to )?favou?rites?|thumbs? (up|down)", label):
-            return "inactive"
-        return None
-    words = set(re.findall(r"[a-z0-9]+", label))
-    if words & {"off", "disabled"}:
-        return "inactive"
-    if glyph == "repeat" and words & {"one", "1", "single", "track", "song"}:
-        return "one"
-    if words & {"on", "all", "enabled"}:
-        return "active"
-    return None
+    label = " ".join(str(action.get("label") or "").lower().split())
+    mode = re.fullmatch(r"[a-z ]+?(?: mode\s*:?|\s*:)\s*([a-z0-9]+)", label)
+    from_label: ToggleState = _MODE_STATES.get(mode.group(1)) if mode else None
+    if from_label is None and not mode:
+        if re.match(r"(remove|undo|unlike|undislike|disable|deactivate|stop)\b|turn .+ off$", label):
+            from_label = "active"
+        elif re.match(r"(enable|activate|start)\b|turn .+ on$|add to (liked|favou?rites)", label) or \
+                re.fullmatch(r"(dis)?like|favou?rite|thumbs? (up|down)", label):
+            from_label = "inactive"
+    active = action.get("active")
+    if isinstance(active, bool):
+        if active and from_label == "one":
+            return "one"
+        return "active" if active else "inactive"
+    return from_label
 
 
 def slot_key(action: Mapping[str, Any], media: bool) -> str:

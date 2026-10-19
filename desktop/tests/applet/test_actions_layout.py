@@ -47,24 +47,43 @@ def test_icon_for(action, glyph):
 
 
 @pytest.mark.parametrize("label,state", [
-    ("Remove like", "active"), ("Unlike", "active"), ("Liked", "active"), ("Like", "inactive"),
-    ("Toggle like", None),
+    ("Remove like", "active"), ("Unlike", "active"), ("Like", "inactive"), ("Add to liked songs", "inactive"),
+    ("Liked", None), ("Toggle like", None),
 ])
 def test_like_state(label, state):
     assert acts.toggle_state({"id": "media.custom.TOGGLE_LIKE", "label": label}) == state
 
 
 @pytest.mark.parametrize("aid,label,state", [
-    ("media.custom.TOGGLE_SHUFFLE", "Shuffle on", "active"),
-    ("media.custom.TOGGLE_SHUFFLE", "Shuffle off", "inactive"),
+    # Bare "<thing> on/off" may name the state or the action (Metrolist: the action) -> neutral.
+    ("media.custom.TOGGLE_SHUFFLE", "Shuffle on", None),
+    ("media.custom.TOGGLE_SHUFFLE", "Shuffle off", None),
     ("media.custom.TOGGLE_SHUFFLE", "Shuffle", None),
+    ("media.custom.TOGGLE_SHUFFLE", "Turn shuffle off", "active"),
+    ("media.custom.TOGGLE_SHUFFLE", "Turn shuffle on", "inactive"),
+    ("media.custom.TOGGLE_SHUFFLE", "Disable shuffle", "active"),
+    ("media.custom.TOGGLE_SHUFFLE", "Enable shuffle", "inactive"),
+    ("media.custom.TOGGLE_SHUFFLE", "Shuffle mode on", "active"),
+    # "mode" or a colon marks a state.
     ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode off", "inactive"),
     ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode one", "one"),
     ("media.custom.TOGGLE_REPEAT_MODE", "Repeat mode all", "active"),
+    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat: one", "one"),
+    ("media.custom.TOGGLE_REPEAT_MODE", "Repeat off", None),
     ("media.custom.TOGGLE_START_RADIO", "Start radio", None),  # not a toggle glyph
 ])
 def test_mode_state(aid, label, state):
     assert acts.toggle_state({"id": aid, "label": label}) == state
+
+
+@pytest.mark.parametrize("label,active,state", [
+    ("Shuffle on", False, "inactive"), ("Shuffle on", True, "active"),
+    ("Remove like", False, "inactive"),  # the explicit field wins over the label
+    ("Repeat mode one", True, "one"), ("Repeat mode one", False, "inactive"),
+])
+def test_explicit_active_field_wins(label, active, state):
+    aid = {"S": "media.custom.TOGGLE_SHUFFLE", "R": "media.custom.TOGGLE_LIKE"}.get(label[0], "media.custom.TOGGLE_REPEAT_MODE")
+    assert acts.toggle_state({"id": aid, "label": label, "active": active}) == state
 
 
 # -- layout helpers --------------------------------------------------------------------------
@@ -204,7 +223,7 @@ def test_metrolist_toggles_keep_their_button_when_relabelled(qtbot, sock_path):
             return out
 
         before = snapshot()
-        assert [before[a][4] for a in ids] == ["active", "active", "inactive"]
+        assert [before[a][4] for a in ids] == ["active", "", "inactive"]
 
         def relabel(labels):
             a = copy.deepcopy(mock.activities[0])
@@ -220,13 +239,25 @@ def test_metrolist_toggles_keep_their_button_when_relabelled(qtbot, sock_path):
             assert after[aid][0] is btn  # same widget
             assert after[aid][1] == geo  # same slot and size
             assert after[aid][2] == Qt.ToolButtonStyle.ToolButtonIconOnly and after[aid][3] == "" == text
-            assert after[aid][5] != img  # restyled
-        assert [after[a][4] for a in ids] == ["inactive", "inactive", "one"]
+        assert after[ids[0]][5] != before[ids[0]][5] and after[ids[2]][5] != before[ids[2]][5]  # restyled
+        assert after[ids[1]][5] == before[ids[1]][5]  # "Shuffle on/off" is ambiguous: stays neutral
+        assert [after[a][4] for a in ids] == ["inactive", "", "one"]
         assert [after[a][6] for a in ids] == ["Like", "Shuffle off", "Repeat mode one"]
 
         relabel({ids[0]: "Remove like", ids[1]: "Shuffle on", ids[2]: "Repeat mode all"})
         final = snapshot()
-        assert [final[a][4] for a in ids] == ["active", "active", "active"]
+        assert [final[a][4] for a in ids] == ["active", "", "active"]
+
+        # A producer that knows the state says so; the applet shows it.
+        a = copy.deepcopy(mock.activities[0])
+        for x in a["actions"]:
+            if x["id"] == ids[1]:
+                x["active"] = True
+        mock.update_activity(a["device"], a["id"], actions=a["actions"])
+        shuffle = card.findChild(QToolButton, f"action:{ids[1]}")
+        qtbot.waitUntil(lambda: shuffle.property("toggleState") == "active")
+        assert shuffle is before[ids[1]][0] and shuffle.geometry() == before[ids[1]][1]
+        assert shuffle.icon().pixmap(20, 20).toImage() != before[ids[1]][5]
         assert all(final[a][0] is before[a][0] and final[a][1] == before[a][1] for a in ids)
         assert_fits(panel)
     finally:
