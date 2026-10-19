@@ -32,6 +32,8 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableLongStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -48,23 +50,71 @@ import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import dev.orbit.protocol.ResponderSession
+import dev.orbit.protocol.POSITION_AT
+import dev.orbit.protocol.bool
+import dev.orbit.protocol.long
 import dev.orbit.protocol.str
+import kotlinx.coroutines.delay
+import kotlinx.serialization.json.JsonPrimitive
+import android.graphics.BitmapFactory
+import androidx.activity.enableEdgeToEdge
+import androidx.compose.foundation.Image
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.calculateEndPadding
+import androidx.compose.foundation.layout.calculateStartPadding
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.size
+import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.darkColorScheme
+import androidx.compose.material3.dynamicDarkColorScheme
+import androidx.compose.material3.dynamicLightColorScheme
+import androidx.compose.material3.lightColorScheme
+import androidx.compose.ui.graphics.asImageBitmap
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.semantics
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
 private const val DIAGNOSTIC_LINES = 200
+private const val KEY_BLOCKED = "blocked_permissions"
+
+/** m:ss, or h:mm:ss from an hour. */
+private fun clock(ms: Long): String {
+    val t = ms / 1000
+    return if (t >= 3600) "%d:%02d:%02d".format(t / 3600, t / 60 % 60, t % 60) else "%d:%02d".format(t / 60, t % 60)
+}
 
 class MainActivity : ComponentActivity() {
-    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
+    private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) { result ->
+        // Android stops showing the dialog after repeated denials; only Settings can grant them then.
+        val blocked = result.filter { !it.value && !shouldShowRequestPermissionRationale(it.key) }.keys
+        uiPrefs.edit().putStringSet(KEY_BLOCKED, blockedPermissions() + blocked).apply()
+        permissionTick.intValue++
         OrbitService.start(this, OrbitService.ACTION_ENSURE_BLE, source = "permission result")
     }
+    private val permissionTick = mutableIntStateOf(0)
+    private val uiPrefs by lazy { getSharedPreferences("ui", MODE_PRIVATE) }
+
+    private fun blockedPermissions(): Set<String> = uiPrefs.getStringSet(KEY_BLOCKED, null).orEmpty()
 
     override fun onCreate(savedInstanceState: Bundle?) {
+        enableEdgeToEdge()
         super.onCreate(savedInstanceState)
         val orbit = Orbit.get(this)
         OrbitService.start(this, source = "app opened")
         setContent {
-            MaterialTheme {
+            val dark = isSystemInDarkTheme()
+            val colors = when {
+                Build.VERSION.SDK_INT >= 31 && dark -> dynamicDarkColorScheme(this)
+                Build.VERSION.SDK_INT >= 31 -> dynamicLightColorScheme(this)
+                dark -> darkColorScheme()
+                else -> lightColorScheme()
+            }
+            MaterialTheme(colorScheme = colors) {
                 Surface(Modifier.fillMaxSize()) {
                     Screen(orbit)
                 }
@@ -116,7 +166,15 @@ class MainActivity : ComponentActivity() {
             onDispose { owner.lifecycle.removeObserver(obs) }
         }
         val granted = remember(resumeTick, connected) { listenerGranted() }
-        val missing = remember(resumeTick) { missingPermissions() }
+        val missing = remember(resumeTick, permissionTick.intValue) { missingPermissions() }
+        val blocked = missing.isNotEmpty() && missing.all { it in blockedPermissions() && !shouldShowRequestPermissionRationale(it) }
+        var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
+        LaunchedEffect(Unit) {
+            while (true) {
+                delay(1000)
+                now = System.currentTimeMillis()
+            }
+        }
         val overlay = remember(resumeTick) { Settings.canDrawOverlays(this) }
         val unrestricted = remember(resumeTick) { Background.ignoringBatteryOptimizations(this) }
         val oem = remember { Background.oemBrand(Build.MANUFACTURER) }
@@ -154,7 +212,16 @@ class MainActivity : ComponentActivity() {
             )
         }
 
-        LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+        val bars = WindowInsets.safeDrawing.asPaddingValues()
+        val dir = LocalLayoutDirection.current
+        LazyColumn(
+            Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = bars.calculateStartPadding(dir) + 16.dp, end = bars.calculateEndPadding(dir) + 16.dp,
+                top = bars.calculateTopPadding() + 16.dp, bottom = bars.calculateBottomPadding() + 16.dp,
+            ),
+            verticalArrangement = Arrangement.spacedBy(12.dp),
+        ) {
             item {
                 Text("Orbit", style = MaterialTheme.typography.headlineMedium)
                 Text("$name · ${orbit.deviceId}", style = MaterialTheme.typography.bodySmall)
@@ -182,9 +249,9 @@ class MainActivity : ComponentActivity() {
                         Text("Notification access: " + if (granted) (if (connected) "granted" else "granted (connecting)") else "not granted")
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (transports.serviceRunning) {
-                                OutlinedButton(onClick = { EventLog.log("service stop from UI"); OrbitService.stop(this@MainActivity) }) { Text("Stop") }
+                                OutlinedButton(onClick = { OrbitService.stop(this@MainActivity) }) { Text("Stop") }
                             } else {
-                                Button(onClick = { OrbitService.start(this@MainActivity, source = "UI start") }) { Text("Start") }
+                                Button(onClick = { OrbitService.start(this@MainActivity, source = "Start button", byUser = true) }) { Text("Start") }
                             }
                             if (!granted) {
                                 Button(onClick = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) {
@@ -198,7 +265,16 @@ class MainActivity : ComponentActivity() {
                                 startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
                             }) { Text("Allow opening apps") }
                         }
-                        if (missing.isNotEmpty()) {
+                        if (blocked) {
+                            Text(
+                                "Notifications or Bluetooth are turned off for Orbit. Without them pairing prompts and " +
+                                    "Bluetooth connections don't work. Turn them on under Permissions in Settings.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            Button(onClick = {
+                                startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+                            }) { Text("Open settings") }
+                        } else if (missing.isNotEmpty()) {
                             Button(onClick = { permissionLauncher.launch(missing.toTypedArray()) }) { Text("Allow notifications & Bluetooth") }
                         }
                     }
@@ -244,11 +320,14 @@ class MainActivity : ComponentActivity() {
                         Text(p.name)
                         Text("${p.platform} · ${p.id.take(8)}", style = MaterialTheme.typography.bodySmall)
                     }
-                    OutlinedButton(onClick = { forgetting = p }) { Text("Forget") }
+                    OutlinedButton(
+                        onClick = { forgetting = p },
+                        modifier = Modifier.semantics { contentDescription = "Forget ${p.name}" },
+                    ) { Text("Forget") }
                 }
             }
             item { Text("Exported activities (${activities.size})", fontWeight = FontWeight.Bold) }
-            items(activities, key = { "a" + it.str("id") }) { a -> ActivityRow(a) }
+            items(activities, key = { "a" + it.str("id") }) { a -> ActivityRow(orbit, a, now) }
             item {
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Diagnostics", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
@@ -289,19 +368,58 @@ class MainActivity : ComponentActivity() {
     }
 
     @Composable
-    private fun ActivityRow(a: JsonObject) {
+    private fun ActivityRow(orbit: Orbit, a: JsonObject, now: Long) {
+        val icon = remember(a.str("iconKey")) {
+            a.str("iconKey")?.let { orbit.hub.art(it) }?.let { BitmapFactory.decodeByteArray(it.data, 0, it.data.size)?.asImageBitmap() }
+        }
         Card(Modifier.fillMaxWidth()) {
-            Column(Modifier.padding(12.dp)) {
-                Text("${a.str("kind")} · ${(a["app"] as? JsonObject)?.str("name")}", style = MaterialTheme.typography.labelSmall)
-                Text(a.str("title").orEmpty(), fontWeight = FontWeight.Bold)
-                listOfNotNull(a.str("subtitle"), a.str("text")).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
-                a["media"]?.let { Text("media: $it", style = MaterialTheme.typography.bodySmall) }
-                a["progress"]?.let { Text("progress: $it", style = MaterialTheme.typography.bodySmall) }
-                a["chrono"]?.let { Text("chrono: $it", style = MaterialTheme.typography.bodySmall) }
-                val actions = (a["actions"] as? JsonArray)?.mapNotNull { (it as? JsonObject)?.str("label") }.orEmpty()
-                if (actions.isNotEmpty()) Text("actions: " + actions.joinToString(", "), style = MaterialTheme.typography.bodySmall)
-                Text(a.str("id").orEmpty(), style = MaterialTheme.typography.labelSmall, fontFamily = FontFamily.Monospace)
+            Row(Modifier.padding(12.dp), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                if (icon != null) Image(icon, contentDescription = null, modifier = Modifier.size(32.dp))
+                Column(Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                    Text((a["app"] as? JsonObject)?.str("name").orEmpty(), style = MaterialTheme.typography.labelSmall)
+                    Text(a.str("title").orEmpty(), fontWeight = FontWeight.Bold)
+                    listOfNotNull(a.str("subtitle"), a.str("text")).forEach { Text(it, style = MaterialTheme.typography.bodySmall) }
+                    (a["media"] as? JsonObject)?.let { MediaLine(it, now) }
+                    (a["progress"] as? JsonObject)?.let { p ->
+                        val max = p.long("max") ?: 0
+                        if (p.bool("indeterminate") == true || max <= 0) {
+                            LinearProgressIndicator(Modifier.fillMaxWidth())
+                        } else {
+                            LinearProgressIndicator(progress = { (p.long("value") ?: 0).toFloat() / max }, modifier = Modifier.fillMaxWidth())
+                        }
+                    }
+                    (a["chrono"] as? JsonObject)?.let { c ->
+                        val base = c.long("baseMs") ?: 0
+                        val ms = when {
+                            c.bool("running") == false -> c.long("valueMs") ?: 0
+                            c.bool("countDown") == true -> base - now
+                            else -> now - base
+                        }
+                        Text(clock(ms.coerceAtLeast(0)), style = MaterialTheme.typography.bodyMedium, fontFamily = FontFamily.Monospace)
+                    }
+                    val buttons = (a["actions"] as? JsonArray).orEmpty().mapNotNull { it as? JsonObject }
+                        .filter { it.bool("overflow") != true && it.str("id") != "open" }.mapNotNull { it.str("label") }
+                    if (buttons.isNotEmpty()) Text(buttons.joinToString(" · "), style = MaterialTheme.typography.bodySmall)
+                }
             }
+        }
+    }
+
+    @Composable
+    private fun MediaLine(m: JsonObject, now: Long) {
+        val state = m.str("state").orEmpty()
+        val at = m.long(POSITION_AT)
+        val rate = (m["rate"] as? JsonPrimitive)?.content?.toDoubleOrNull() ?: 1.0
+        val duration = m.long("durationMs")
+        val position = m.long("positionMs")?.let { pos ->
+            val elapsed = if (state == "playing" && at != null) ((now - at) * rate).toLong() else 0
+            (pos + elapsed).let { if (duration != null) it.coerceAtMost(duration) else it }
+        }
+        val time = listOfNotNull(position?.let(::clock), duration?.let(::clock)).joinToString(" / ")
+        Text(listOf(state.replaceFirstChar { it.uppercase() }, time).filter { it.isNotEmpty() }.joinToString(" · "),
+            style = MaterialTheme.typography.bodySmall)
+        if (position != null && duration != null && duration > 0) {
+            LinearProgressIndicator(progress = { position.toFloat() / duration }, modifier = Modifier.fillMaxWidth())
         }
     }
 }

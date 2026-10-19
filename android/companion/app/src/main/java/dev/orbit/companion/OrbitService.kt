@@ -130,14 +130,32 @@ class OrbitService : Service() {
             BluetoothAdapter.STATE_ON to "on", BluetoothAdapter.STATE_TURNING_OFF to "turning off",
         )
 
-        /** [source] names the caller in the diagnostics log. */
-        fun start(context: Context, action: String? = null, source: String) {
+        private const val KEY_STOPPED = "stopped_by_user"
+
+        private fun prefs(context: Context) = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+
+        fun stoppedByUser(context: Context) = prefs(context).getBoolean(KEY_STOPPED, false)
+
+        /**
+         * Starts serving unless the user pressed Stop; [byUser] (the Start button) clears that.
+         * [source] names the caller in the diagnostics log.
+         */
+        fun start(context: Context, action: String? = null, source: String, byUser: Boolean = false) {
+            if (byUser) {
+                prefs(context).edit().putBoolean(KEY_STOPPED, false).apply()
+            } else if (stoppedByUser(context)) {
+                EventLog.log("service start from $source skipped: stopped by user")
+                return
+            }
             context.startForegroundService(
                 Intent(context, OrbitService::class.java).setAction(action).putExtra(EXTRA_SOURCE, source),
             )
         }
 
+        /** The user's Stop: stays stopped until [start] with byUser. */
         fun stop(context: Context) {
+            prefs(context).edit().putBoolean(KEY_STOPPED, true).apply()
+            EventLog.log("service stop by user")
             context.stopService(Intent(context, OrbitService::class.java))
         }
     }

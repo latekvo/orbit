@@ -11,7 +11,6 @@ import android.bluetooth.BluetoothGattServerCallback
 import android.bluetooth.BluetoothGattService
 import android.bluetooth.BluetoothManager
 import android.bluetooth.BluetoothProfile
-import android.bluetooth.BluetoothStatusCodes
 import android.bluetooth.le.AdvertiseCallback
 import android.bluetooth.le.AdvertiseData
 import android.bluetooth.le.AdvertiseSettings
@@ -318,12 +317,12 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
                             @Suppress("DEPRECATION")
                             tx.value = chunk
                             @Suppress("DEPRECATION")
-                            if (server.notifyCharacteristicChanged(device, tx, false)) BluetoothStatusCodes.SUCCESS else -1
+                            if (server.notifyCharacteristicChanged(device, tx, false)) NOTIFY_OK else -1
                         }
                     } catch (e: SecurityException) {
                         throw IOException("bluetooth permission revoked", e)
                     }
-                    if (code == BluetoothStatusCodes.SUCCESS) break
+                    if (code == NOTIFY_OK) break
                     busy++
                     lastCode = code
                     // The stack is busy (e.g. congested): retry briefly.
@@ -368,6 +367,8 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
         val TX_UUID: UUID = UUID.fromString("616dfa5e-069e-4839-8335-87edbeb2c1a5")
         val CCCD_UUID: UUID = UUID.fromString("00002902-0000-1000-8000-00805f9b34fb")
         private const val NOTIFY_TIMEOUT_MS = 5_000L
+        /** BluetoothStatusCodes.SUCCESS (API 31). */
+        private const val NOTIFY_OK = 0
         /** 251-byte LE data PDU minus L2CAP and ATT headers: each notification fits one link-layer packet. */
         private const val MAX_NOTIFICATION = 244
     }
