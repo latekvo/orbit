@@ -201,8 +201,14 @@ its own clock. Media positions are valid at the message's `now`.
 
 ```jsonc
 {"id": "media.pause", "label": "Pause", "icon": "pause",
- "input": {"kind": "text", "label": "Reply"}}   // input optional
+ "input": {"kind": "text", "label": "Reply"},   // input optional
+ "active": true}                                // optional, toggles only
 ```
+
+`active` (optional bool): the current state of a toggle action (like, shuffle, repeat, mute...),
+`true` = currently on. Producers SHOULD set it whenever they know the state, because labels
+are ambiguous across apps ("Shuffle on" may name the current state or the action to take).
+Consumers MUST prefer it over anything inferred from the label.
 
 Well-known `icon` values: `play`, `pause`, `next`, `previous`, `stop`, `close`, `reply`,
 `add`, `remove`, `check`, `mute`, `unmute`, `like`, `dislike`, `shuffle`, `repeat`,

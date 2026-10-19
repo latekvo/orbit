@@ -13,7 +13,7 @@ import zlib
 import pytest
 
 from mock_orbitd import (
-    DEMO_SAS, DOWNLOAD, MESSAGE, PIXEL_7A, PIXEL_8, SPOTIFY, TIMER, WORK_PHONE, MockOrbitd,
+    DEMO_SAS, DOWNLOAD, MESSAGE, PIXEL_7A, PIXEL_8, PIXEL_9_PRO, SPOTIFY, TIMER, WORK_PHONE, MockOrbitd,
 )
 
 
@@ -126,7 +126,7 @@ def test_subscribe_result_then_one_of_each_event(client):
     assert [m["event"] for m in msgs[1:]] == ["devices.changed", "pairing.changed",
                                              "activities.changed"]
     assert {d["name"] for d in msgs[1]["data"]["devices"]} == {
-        "Pixel 8", "Galaxy Tab S9", "Work Phone", "Pixel 7a"}
+        "Pixel 8", "Galaxy Tab S9", "Work Phone", "Pixel 7a", "Pixel 9 Pro"}
     assert msgs[2]["data"] == {"pairings": []}
     assert len(msgs[3]["data"]["activities"]) == 6
 
@@ -134,7 +134,12 @@ def test_subscribe_result_then_one_of_each_event(client):
 def test_demo_devices_and_ids(client):
     devices = {d["name"]: d for d in client.call("devices.list")}
     assert devices["Pixel 8"]["id"] == PIXEL_8
-    assert all(len(d["id"]) == 32 and int(d["id"], 16) >= 0 for d in devices.values())
+    assert all(len(d["id"]) == (16 if d["provisional"] else 32) and int(d["id"], 16) >= 0
+               for d in devices.values())
+    assert devices["Pixel 9 Pro"] == {
+        "id": PIXEL_9_PRO[:16], "name": "Pixel 9 Pro", "platform": "", "paired": False,
+        "connected": False, "transport": None, "address": None, "discovered": ["ble"],
+        "provisional": True}
     assert devices["Work Phone"]["connected"] is False
     assert devices["Pixel 7a"]["paired"] is False
 
@@ -412,3 +417,14 @@ def test_evolve_auto_advances_track(sock_path):
         c.close()
     finally:
         m.stop()
+
+
+def test_connect_provisional_ble_device_yields_real_id_and_pairing(mock, client):
+    client.subscribe()
+    reply = client.call("devices.connect", {"id": PIXEL_9_PRO[:16]})
+    assert reply == {"id": PIXEL_9_PRO}
+    ids = [d["id"] for d in client.call("devices.list")]
+    assert PIXEL_9_PRO in ids and PIXEL_9_PRO[:16] not in ids
+    real = next(d for d in client.call("devices.list") if d["id"] == PIXEL_9_PRO)
+    assert real["provisional"] is False and real["connected"] is True and real["transport"] == "ble"
+    assert [p["deviceId"] for p in client.call("pairing.list")] == [PIXEL_9_PRO]

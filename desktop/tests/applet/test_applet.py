@@ -427,3 +427,39 @@ def test_pairing_dialog_close_rejects_and_tracks_state(qtbot, client, mock):
     dlg.close()
     qtbot.waitUntil(lambda: {"method": "pairing.respond", "params": {"session": "sess-1", "accept": False}}
                     in mock.requests)
+
+
+def test_pair_provisional_ble_device_follows_real_id_without_duplicates(qtbot, client, mock):
+    from mock_orbitd import PIXEL_9_PRO
+    from orbit.applet.panel import DeviceRow
+
+    prefix = PIXEL_9_PRO[:16]
+    panel = make_panel(qtbot, client)
+    mgr = PairingManager(client, LIGHT)
+    panel.show_devices()
+    page = panel.devices_page
+
+    def rows_named(name):
+        return [r for r in page.findChildren(DeviceRow) if r.device.get("name") == name and r.isVisibleTo(panel)]
+
+    counts = []
+    client.devicesChanged.connect(lambda *_: counts.append(len(rows_named("Pixel 9 Pro"))))
+    client.pairingsChanged.connect(lambda *_: counts.append(len(rows_named("Pixel 9 Pro"))))
+
+    [row] = rows_named("Pixel 9 Pro")
+    assert row.device_id == prefix and row.status.fullText() == "Nearby (Bluetooth)"
+    mock.clear_recorded()
+    qtbot.mouseClick(row.buttons["Pair"], Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: row.device_id == PIXEL_9_PRO)
+    assert {"method": "devices.connect", "params": {"id": prefix}} in mock.requests
+    assert rows_named("Pixel 9 Pro") == [row]  # same widget, re-keyed
+    qtbot.waitUntil(lambda: any(d.pairing["deviceId"] == PIXEL_9_PRO for d in mgr.dialogs.values()))
+    qtbot.waitUntil(lambda: row.status.fullText() == "Confirm the pairing code")
+    assert not row.buttons["Pair"].isEnabled()
+
+    dlg = next(d for d in mgr.dialogs.values() if d.pairing["deviceId"] == PIXEL_9_PRO)
+    qtbot.mouseClick(dlg.accept_btn, Qt.MouseButton.LeftButton)
+    qtbot.waitUntil(lambda: "Disconnect" in row.buttons)
+    assert rows_named("Pixel 9 Pro") == [row] and row.device["paired"] is True
+    assert row.status.fullText() == "Connected via Bluetooth"
+    assert counts and max(counts) == 1  # never two rows for the device, at any event

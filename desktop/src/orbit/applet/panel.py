@@ -9,6 +9,8 @@ from PySide6.QtCore import QEvent, QPoint, QRect, QSize, Qt, QTimer, Signal
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QPushButton, QScrollArea,
                                QStackedWidget, QToolButton, QVBoxLayout, QWidget)
 
+from shiboken6 import isValid
+
 from . import icons
 from .cards import ActivityCard, ArtView, ElidedLabel
 from .client import DaemonClient
@@ -181,47 +183,73 @@ class ActivitiesPage(QWidget):
 
 
 class DeviceRow(QFrame):
+    """One device. Updated in place, so it survives a provisional id turning into the real one."""
+
     def __init__(self, page: "DevicesPage", device: dict):
         super().__init__()
         self.setObjectName("deviceRow")
         self.page = page
-        self.device = device
-        theme = page.theme
+        self.device: dict = {}
+        self.busy = False
+        self._kind: tuple | None = None
+        self.buttons: dict[str, QPushButton] = {}
         lay = QHBoxLayout(self)
         lay.setContentsMargins(10, 8, 10, 8)
         lay.setSpacing(8)
-        glyph = QLabel()
-        color = theme.accent if device.get("connected") else theme.muted
-        glyph.setPixmap(icons.icon("phone", color).pixmap(QSize(22, 22)))
-        lay.addWidget(glyph)
+        self.glyph = QLabel()
+        lay.addWidget(self.glyph)
         texts = QVBoxLayout()
         texts.setSpacing(0)
-        name = ElidedLabel(device.get("name") or device.get("id", ""))
-        name.setProperty("role", "title")
-        status = ElidedLabel(device_status_text(device))
-        status.setObjectName("deviceStatus")
-        status.setProperty("role", "muted")
-        if device.get("address"):
-            self.setToolTip(device["address"])
-        texts.addWidget(name)
-        texts.addWidget(status)
+        self.name = ElidedLabel()
+        self.name.setProperty("role", "title")
+        self.status = ElidedLabel()
+        self.status.setObjectName("deviceStatus")
+        self.status.setProperty("role", "muted")
+        texts.addWidget(self.name)
+        texts.addWidget(self.status)
         lay.addLayout(texts, 1)
-        dev_id = device.get("id", "")
-        self.buttons: dict[str, QPushButton] = {}
-        if device.get("paired"):
-            if device.get("connected"):
-                self._button("Disconnect", lambda: page.run("devices.disconnect", {"id": dev_id}, self.buttons["Disconnect"]))
+        self._buttons_box = QHBoxLayout()
+        self._buttons_box.setSpacing(8)
+        lay.addLayout(self._buttons_box)
+        self._confirm = QTimer(self, singleShot=True)
+        self._confirm.timeout.connect(lambda: self.buttons["Forget"].setText("Forget"))
+        self.update_device(device, pairing=False)
+
+    @property
+    def device_id(self) -> str:
+        return self.device.get("id", "")
+
+    def update_device(self, device: dict, pairing: bool) -> None:
+        self.device = device
+        theme = self.page.theme
+        color = theme.accent if device.get("connected") else theme.muted
+        self.glyph.setPixmap(icons.icon("phone", color).pixmap(QSize(22, 22)))
+        self.name.setFullText(device.get("name") or device.get("id", ""))
+        self.status.setFullText("Confirm the pairing code" if pairing else device_status_text(device))
+        self.setToolTip(device.get("address") or "")
+        kind = (True, bool(device.get("connected"))) if device.get("paired") else (False,)
+        if kind != self._kind:
+            self._kind = kind
+            self._rebuild_buttons()
+        pair = self.buttons.get("Pair")
+        if pair is not None and not self.busy:
+            pair.setEnabled(not pairing)
+            pair.setText("Pairing..." if pairing else "Pair")
+
+    def _rebuild_buttons(self) -> None:
+        while self._buttons_box.count():
+            self._buttons_box.takeAt(0).widget().deleteLater()
+        self.buttons = {}
+        self._confirm.stop()
+        if self.device.get("paired"):
+            if self.device.get("connected"):
+                self._button("Disconnect", lambda: self._run("devices.disconnect", "Disconnect"))
             else:
-                self._button("Connect", lambda: page.run("devices.connect", {"id": dev_id}, self.buttons["Connect"],
-                                                         busy="Connecting..."))
-            self.forget = self._button("Forget", self._forget)
-            self.forget.setProperty("role", "danger")
-            self._confirm = QTimer(self, singleShot=True)
-            self._confirm.timeout.connect(lambda: self.forget.setText("Forget"))
+                self._button("Connect", lambda: self._run("devices.connect", "Connect", "Connecting..."))
+            self._button("Forget", self._forget).setProperty("role", "danger")
         else:
-            pair = self._button("Pair", lambda: page.run("devices.connect", {"id": dev_id}, self.buttons["Pair"],
-                                                         busy="Pairing..."))
-            pair.setProperty("role", "primary")
+            self._button("Pair", lambda: self._run("devices.connect", "Pair", "Pairing...")).setProperty(
+                "role", "primary")
 
     def _button(self, text: str, slot) -> QPushButton:
         btn = QPushButton(text)
@@ -229,17 +257,39 @@ class DeviceRow(QFrame):
         btn.setProperty("compact", True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(slot)
-        self.layout().addWidget(btn)
+        self._buttons_box.addWidget(btn)
         self.buttons[text] = btn
         return btn
 
+    def _run(self, method: str, name: str, busy: str | None = None) -> None:
+        button = self.buttons[name]
+        self.busy = True
+        button.setEnabled(False)
+        if busy:
+            button.setText(busy)
+
+        def done(result: Any, error: dict | None) -> None:
+            if not isValid(self):
+                return
+            self.busy = False
+            if isValid(button):
+                button.setEnabled(True)
+                button.setText(name)
+            self.update_device(self.device, self.page.pairing_pending(self.device_id))
+            if error:
+                self.page.show_message(f"{error.get('message') or error.get('code')}", error=True)
+
+        # The id is read at click time: a provisional row may have been re-keyed meanwhile.
+        self.page.client.request(method, {"id": self.device_id}, done)
+
     def _forget(self) -> None:
-        if self.forget.text() == "Forget":
-            self.forget.setText("Confirm?")
+        forget = self.buttons["Forget"]
+        if forget.text() == "Forget":
+            forget.setText("Confirm?")
             self._confirm.start(FORGET_CONFIRM_MS)
             return
         self._confirm.stop()
-        self.page.run("devices.forget", {"id": self.device.get("id", "")}, self.forget)
+        self._run("devices.forget", "Forget")
 
 
 class DevicesPage(QWidget):
@@ -287,40 +337,69 @@ class DevicesPage(QWidget):
         self._msg_timer = QTimer(self, singleShot=True)
         self._msg_timer.timeout.connect(self.message.hide)
 
+        self._rows: dict[str, DeviceRow] = {}
+        self._extras: list[QWidget] = []
         client.devicesChanged.connect(self.refresh)
+        client.pairingsChanged.connect(self.refresh)
         client.connectedChanged.connect(self.refresh)
         self.refresh()
 
+    def pairing_pending(self, device_id: str) -> bool:
+        return any(p.get("deviceId") == device_id for p in self.client.pairings)
+
     def refresh(self, *_: Any) -> None:
+        devices = [d for d in self.client.devices
+                   if d.get("paired") or d.get("discovered") or d.get("connected")]
+        ids = {d.get("id") for d in devices}
+        rows: dict[str, DeviceRow] = {}
+        for d in devices:
+            did = d.get("id", "")
+            row = self._rows.get(did)
+            if row is None:
+                # A provisional (BLE prefix) entry is replaced by the real id: keep its row.
+                row = next((r for old, r in self._rows.items()
+                            if r.device.get("provisional") and old not in ids and did.startswith(old)
+                            and r not in rows.values()), None)
+            if row is None:
+                row = DeviceRow(self, d)
+            row.update_device(d, self.pairing_pending(did))
+            rows[did] = row
+        for row in self._rows.values():
+            if row not in rows.values():
+                row.deleteLater()
+        self._rows = rows
+
         while self.rows_box.count():
-            item = self.rows_box.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        devices = self.client.devices
-        paired = [d for d in devices if d.get("paired")]
-        nearby = [d for d in devices if not d.get("paired") and (d.get("discovered") or d.get("connected"))]
+            self.rows_box.takeAt(0)
+        for w in self._extras:
+            w.deleteLater()
+        self._extras = []
+        paired = [rows[d["id"]] for d in devices if d.get("paired")]
+        nearby = [rows[d["id"]] for d in devices if not d.get("paired")]
         if not self.client.connected:
             self._section("orbitd is not running")
         if paired:
             self._section("Paired devices")
-            for d in paired:
-                self.rows_box.addWidget(DeviceRow(self, d))
+            for r in paired:
+                self.rows_box.addWidget(r)
         if nearby:
             self._section("Nearby")
-            for d in nearby:
-                self.rows_box.addWidget(DeviceRow(self, d))
-        if self.client.connected and not paired and not nearby:
+            for r in nearby:
+                self.rows_box.addWidget(r)
+        if self.client.connected and not devices:
             self._section("No devices found")
             hint = QLabel("Open Orbit on your phone on the same Wi-Fi network, or with Bluetooth on, "
                           "and it will appear here. You can also add it by address.")
             hint.setProperty("role", "muted")
             hint.setWordWrap(True)
+            self._extras.append(hint)
             self.rows_box.addWidget(hint)
         self.add_button.setEnabled(self.client.connected)
 
     def _section(self, text: str) -> None:
         lbl = QLabel(text)
         lbl.setProperty("role", "section")
+        self._extras.append(lbl)
         self.rows_box.addWidget(lbl)
 
     def show_message(self, text: str, error: bool = False) -> None:
@@ -330,23 +409,6 @@ class DevicesPage(QWidget):
         self.message.setText(text)
         self.message.show()
         self._msg_timer.start(6000)
-
-    def run(self, method: str, params: dict, button: QPushButton | None = None, busy: str | None = None) -> None:
-        original = button.text() if button else ""
-        if button:
-            button.setEnabled(False)
-            if busy:
-                button.setText(busy)
-
-        def done(result: Any, error: dict | None) -> None:
-            from shiboken6 import isValid
-            if button is not None and isValid(button):
-                button.setEnabled(True)
-                button.setText(original)
-            if error:
-                self.show_message(f"{error.get('message') or error.get('code')}", error=True)
-
-        self.client.request(method, params, done)
 
     def connect_address(self) -> None:
         try:
