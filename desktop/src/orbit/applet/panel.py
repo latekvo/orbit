@@ -188,8 +188,8 @@ class DeviceRow(QFrame):
         self.device = device
         theme = page.theme
         lay = QHBoxLayout(self)
-        lay.setContentsMargins(10, 8, 8, 8)
-        lay.setSpacing(10)
+        lay.setContentsMargins(10, 8, 10, 8)
+        lay.setSpacing(8)
         glyph = QLabel()
         color = theme.accent if device.get("connected") else theme.muted
         glyph.setPixmap(icons.icon("phone", color).pixmap(QSize(22, 22)))
@@ -201,6 +201,8 @@ class DeviceRow(QFrame):
         status = ElidedLabel(device_status_text(device))
         status.setObjectName("deviceStatus")
         status.setProperty("role", "muted")
+        if device.get("address"):
+            self.setToolTip(device["address"])
         texts.addWidget(name)
         texts.addWidget(status)
         lay.addLayout(texts, 1)
@@ -224,6 +226,7 @@ class DeviceRow(QFrame):
     def _button(self, text: str, slot) -> QPushButton:
         btn = QPushButton(text)
         btn.setObjectName(f"device:{text.lower()}")
+        btn.setProperty("compact", True)
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
         btn.clicked.connect(slot)
         self.layout().addWidget(btn)

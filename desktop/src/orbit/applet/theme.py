@@ -101,6 +101,7 @@ QToolButton[role="media"] {{ border-radius: 18px; padding: 6px; }}
 QToolButton[role="primary"] {{ border-radius: 20px; padding: 8px; }}
 QPushButton {{ color: {t.text}; background: {t.card}; border: 1px solid {t.border};
     border-radius: 8px; padding: 6px 14px; }}
+QPushButton[compact="true"] {{ padding: 4px 10px; font-size: 12px; }}
 QPushButton:hover {{ background: {t.hover}; }}
 QPushButton:disabled {{ color: {t.muted}; }}
 QPushButton[role="primary"] {{ background: {t.accent}; color: #ffffff; border: none; font-weight: 600; }}

@@ -333,7 +333,7 @@ def test_devices_page_lists_and_acts(qtbot, client, mock):
     panel = make_panel(qtbot, client)
     panel.show_devices()
     statuses = {w.parent().device["name"]: w.fullText() for w in panel.devices_page.findChildren(QLabel, "deviceStatus")}
-    assert statuses["Pixel 8"].startswith("Connected via Wi-Fi")
+    assert statuses["Pixel 8"] == "Connected via Wi-Fi"
     assert statuses["Galaxy Tab S9"] == "Connected via Bluetooth"
     assert statuses["Work Phone"] == "Offline"
     assert statuses["Pixel 7a"].startswith("Nearby")

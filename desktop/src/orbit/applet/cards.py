@@ -388,7 +388,7 @@ class ActivityCard(QFrame):
             btn.setIconSize(QSize(24, 24) if primary else QSize(22, 22))
             btn.setProperty("role", "primary" if primary else "media")
             if primary:
-                btn.setStyleSheet(f"QToolButton {{ background: {self.accent()}; }}"
+                btn.setStyleSheet(f"QToolButton {{ background: {self.accent()}; border-radius: 20px; }}"
                                   f"QToolButton:hover {{ background: {QColor(self.accent()).lighter(115).name()}; }}")
         else:
             btn.setText(label)
