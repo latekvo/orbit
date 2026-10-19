@@ -79,10 +79,11 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
         orbit.actionExecutor = this
         orbit.listenerConnected.value = true
         // The system keeps this listener bound, so it is the most reliable place to (re)start serving.
+        EventLog.log("notification listener connected")
         try {
-            OrbitService.start(this)
+            OrbitService.start(this, source = "notification listener")
         } catch (e: IllegalStateException) {
-            Log.w(TAG, "could not start the foreground service from the listener", e)
+            EventLog.log("service start from listener refused: $e")
         }
         val active = runCatching { activeNotifications?.toList().orEmpty() }.getOrDefault(emptyList())
         handler.post {
@@ -100,6 +101,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     }
 
     override fun onListenerDisconnected() {
+        EventLog.log("notification listener disconnected")
         if (orbit.actionExecutor === this) orbit.actionExecutor = null
         orbit.listenerConnected.value = false
         handler.post {

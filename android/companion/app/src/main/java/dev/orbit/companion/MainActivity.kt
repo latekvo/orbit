@@ -1,6 +1,8 @@
 package dev.orbit.companion
 
 import android.Manifest
+import android.content.ClipData
+import android.content.ClipboardManager
 import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -44,20 +46,23 @@ import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.compose.LocalLifecycleOwner
 import androidx.lifecycle.LifecycleEventObserver
 import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import dev.orbit.protocol.ResponderSession
 import dev.orbit.protocol.str
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 
+private const val DIAGNOSTIC_LINES = 200
+
 class MainActivity : ComponentActivity() {
     private val permissionLauncher = registerForActivityResult(ActivityResultContracts.RequestMultiplePermissions()) {
-        OrbitService.start(this, OrbitService.ACTION_RESTART_BLE)
+        OrbitService.start(this, OrbitService.ACTION_ENSURE_BLE, source = "permission result")
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         val orbit = Orbit.get(this)
-        OrbitService.start(this)
+        OrbitService.start(this, source = "app opened")
         setContent {
             MaterialTheme {
                 Surface(Modifier.fillMaxSize()) {
@@ -113,6 +118,11 @@ class MainActivity : ComponentActivity() {
         val granted = remember(resumeTick, connected) { listenerGranted() }
         val missing = remember(resumeTick) { missingPermissions() }
         val overlay = remember(resumeTick) { Settings.canDrawOverlays(this) }
+        val unrestricted = remember(resumeTick) { Background.ignoringBatteryOptimizations(this) }
+        val oem = remember { Background.oemBrand(Build.MANUFACTURER) }
+        var diagnostics by remember { mutableStateOf("") }
+        var showDiagnostics by remember { mutableStateOf(false) }
+        LaunchedEffect(resumeTick, showDiagnostics) { if (showDiagnostics) diagnostics = EventLog.read() }
 
         var forgetting by remember { mutableStateOf<PinnedPeer?>(null) }
         forgetting?.let { p ->
@@ -172,9 +182,9 @@ class MainActivity : ComponentActivity() {
                         Text("Notification access: " + if (granted) (if (connected) "granted" else "granted (connecting)") else "not granted")
                         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                             if (transports.serviceRunning) {
-                                OutlinedButton(onClick = { OrbitService.stop(this@MainActivity) }) { Text("Stop") }
+                                OutlinedButton(onClick = { EventLog.log("service stop from UI"); OrbitService.stop(this@MainActivity) }) { Text("Stop") }
                             } else {
-                                Button(onClick = { OrbitService.start(this@MainActivity) }) { Text("Start") }
+                                Button(onClick = { OrbitService.start(this@MainActivity, source = "UI start") }) { Text("Start") }
                             }
                             if (!granted) {
                                 Button(onClick = { startActivity(Intent(Settings.ACTION_NOTIFICATION_LISTENER_SETTINGS)) }) {
@@ -190,6 +200,33 @@ class MainActivity : ComponentActivity() {
                         }
                         if (missing.isNotEmpty()) {
                             Button(onClick = { permissionLauncher.launch(missing.toTypedArray()) }) { Text("Allow notifications & Bluetooth") }
+                        }
+                    }
+                }
+            }
+            if (!unrestricted || oem != null) {
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Keep Orbit running", fontWeight = FontWeight.Bold)
+                            Text(
+                                "To save battery the phone may stop Orbit in the background, which disconnects your computers.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                            if (!unrestricted) {
+                                Button(onClick = { launch(Background.batteryExemptionIntent(this@MainActivity)) }) {
+                                    Text("Allow running in background")
+                                }
+                            }
+                            if (oem != null) {
+                                Text(
+                                    "$oem phones also stop apps on their own. Allow Orbit to auto-start and run in the background.",
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                                OutlinedButton(onClick = { launch(Background.oemSettingsIntent(this@MainActivity, oem)) }) {
+                                    Text("Open $oem settings")
+                                }
+                            }
                         }
                     }
                 }
@@ -212,6 +249,42 @@ class MainActivity : ComponentActivity() {
             }
             item { Text("Exported activities (${activities.size})", fontWeight = FontWeight.Bold) }
             items(activities, key = { "a" + it.str("id") }) { a -> ActivityRow(a) }
+            item {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Diagnostics", fontWeight = FontWeight.Bold, modifier = Modifier.weight(1f))
+                    TextButton(onClick = { showDiagnostics = !showDiagnostics }) { Text(if (showDiagnostics) "Hide" else "Show") }
+                }
+            }
+            if (showDiagnostics) {
+                item {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        OutlinedButton(onClick = { diagnostics = EventLog.read() }) { Text("Refresh") }
+                        OutlinedButton(onClick = {
+                            getSystemService(ClipboardManager::class.java).setPrimaryClip(ClipData.newPlainText("Orbit events", EventLog.read()))
+                        }) { Text("Copy") }
+                        OutlinedButton(onClick = {
+                            val send = Intent(Intent.ACTION_SEND).setType("text/plain").putExtra(Intent.EXTRA_TEXT, EventLog.read())
+                            startActivity(Intent.createChooser(send, "Share Orbit events"))
+                        }) { Text("Share") }
+                    }
+                }
+                item {
+                    Text(
+                        diagnostics.lines().takeLast(DIAGNOSTIC_LINES).joinToString("\n").ifBlank { "No events" },
+                        style = MaterialTheme.typography.bodySmall, fontFamily = FontFamily.Monospace,
+                    )
+                }
+            }
+        }
+    }
+
+    /** Starts a settings screen; OEM screens may refuse callers, so fall back to the app details. */
+    private fun launch(intent: Intent) {
+        try {
+            startActivity(intent)
+        } catch (e: RuntimeException) {
+            EventLog.log("could not open ${intent.component ?: intent.action}: $e")
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
         }
     }
 
