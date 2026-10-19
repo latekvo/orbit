@@ -289,11 +289,13 @@ applet = [
 
 [package.dev-dependencies]
 dev = [
-    { name = "pyside6-essentials" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
-    { name = "pytest-qt" },
     { name = "ruff" },
+]
+qt = [
+    { name = "pyside6-essentials" },
+    { name = "pytest-qt" },
 ]
 
 [package.metadata]
@@ -308,11 +310,13 @@ provides-extras = ["applet"]
 
 [package.metadata.requires-dev]
 dev = [
-    { name = "pyside6-essentials", specifier = ">=6.7" },
     { name = "pytest", specifier = ">=8" },
     { name = "pytest-asyncio", specifier = ">=0.23" },
-    { name = "pytest-qt", specifier = ">=4.4" },
     { name = "ruff", specifier = ">=0.6" },
+]
+qt = [
+    { name = "pyside6-essentials", specifier = ">=6.7" },
+    { name = "pytest-qt", specifier = ">=4.4" },
 ]
 
 [[package]]

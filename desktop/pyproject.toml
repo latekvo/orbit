@@ -21,7 +21,12 @@ orbit-mpris = "orbit.mpris:main"
 orbit-applet = "orbit.applet.app:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "pytest-qt>=4.4", "PySide6-Essentials>=6.7"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+# Separate so hosts without PySide6 wheels (e.g. Linux aarch64 with glibc < 2.39) can `--no-group qt`.
+qt = ["pytest-qt>=4.4", "PySide6-Essentials>=6.7"]
+
+[tool.uv]
+default-groups = ["dev", "qt"]
 
 [build-system]
 requires = ["hatchling"]

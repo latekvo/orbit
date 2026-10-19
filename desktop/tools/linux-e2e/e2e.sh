@@ -9,7 +9,7 @@ if [ "${1:-}" != --in-session ]; then
     tar -C /repo --exclude=.venv --exclude=__pycache__ --exclude=.pytest_cache --exclude=.ruff_cache \
         -cf - desktop spec | tar -C /work -xf -
     cd /work/desktop
-    UV_PROJECT_ENVIRONMENT=/venv uv sync --frozen --quiet
+    UV_PROJECT_ENVIRONMENT=/venv uv sync --frozen --quiet --no-group qt
     exec dbus-run-session -- bash "$0" --in-session
 fi
 

@@ -8,6 +8,11 @@ from orbit.client import LocalClient
 from orbit.daemon.core import Daemon
 from orbit.fakephone import FakePhone
 
+try:
+    import pytestqt  # noqa: F401
+except ImportError:  # synced with --no-group qt
+    collect_ignore = ["applet"]
+
 
 @pytest.fixture
 def short_tmp():
