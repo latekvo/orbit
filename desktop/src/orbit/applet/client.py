@@ -12,6 +12,8 @@ from PySide6.QtCore import QByteArray, QObject, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QLocalSocket
 
+from .model import ORBITD_DOWN, ORBITD_UNRESPONSIVE
+
 log = logging.getLogger("orbit.applet.client")
 
 Callback = Callable[[Any, dict | None], None]
@@ -19,7 +21,19 @@ Callback = Callable[[Any, dict | None], None]
 
 RECONNECT_MIN_MS = 500
 RECONNECT_MAX_MS = 5000
-REQUEST_TIMEOUT_MS = 15000  # activities.action alone may take 10 s daemon-side
+# Requests that reach the phone wait longer than orbitd's own bound for them (activities.action
+# answers within ~12 s); the rest are answered locally and fast.
+REQUEST_TIMEOUTS_MS = {
+    "activities.action": 20_000,
+    "art.get": 20_000,
+    "devices.connect": 45_000,  # BLE connect + handshake
+    "devices.disconnect": 20_000,
+    "devices.forget": 20_000,
+    "pairing.respond": 20_000,
+}
+QUICK_TIMEOUT_MS = 5_000
+# After a timeout, a `status` ping tells a slow phone from an unresponsive orbitd.
+PROBE_TIMEOUT_MS = 3_000
 ART_CACHE_SIZE = 64
 
 
@@ -40,7 +54,10 @@ class DaemonClient(QObject):
         self.pairings: list[dict] = []
         self.activities: list[dict] = []
         self._next_id = 1
-        self._pending: dict[int, tuple[Callback | None, QTimer]] = {}
+        self._pending: dict[int, tuple[Callback | None, QTimer, bool]] = {}
+        self.timeouts_ms = dict(REQUEST_TIMEOUTS_MS)
+        self.quick_timeout_ms = QUICK_TIMEOUT_MS
+        self.probe_timeout_ms = PROBE_TIMEOUT_MS
         self._buf = b""
         self._art: OrderedDict[str, QPixmap] = OrderedDict()
         self._art_requested: set[str] = set()
@@ -108,10 +125,10 @@ class DaemonClient(QObject):
 
     def _set_disconnected(self) -> None:
         pending, self._pending = self._pending, {}
-        for cb, timer in pending.values():
+        for cb, timer, _ in pending.values():
             timer.stop()
             if cb:
-                cb(None, {"code": "not_connected", "message": "orbitd is not running"})
+                cb(None, {"code": ORBITD_DOWN, "message": "orbitd is not running"})
         was = self.connected
         self.connected = False
         if self.devices or self.pairings or self.activities:
@@ -125,10 +142,10 @@ class DaemonClient(QObject):
     # -- requests --------------------------------------------------------------------------
 
     def request(self, method: str, params: dict | None = None, callback: Callback | None = None,
-                timeout_ms: int = REQUEST_TIMEOUT_MS) -> int | None:
+                *, _probe: bool = False) -> int | None:
         if not self.connected:
             if callback:
-                QTimer.singleShot(0, lambda: callback(None, {"code": "not_connected",
+                QTimer.singleShot(0, lambda: callback(None, {"code": ORBITD_DOWN,
                                                             "message": "orbitd is not running"}))
             return None
         rid = self._next_id
@@ -136,8 +153,8 @@ class DaemonClient(QObject):
         msg = {"id": rid, "method": method, "params": params or {}}
         timer = QTimer(self, singleShot=True)
         timer.timeout.connect(lambda: self._on_timeout(rid))
-        timer.start(timeout_ms)
-        self._pending[rid] = (callback, timer)
+        timer.start(self.probe_timeout_ms if _probe else self.timeouts_ms.get(method, self.quick_timeout_ms))
+        self._pending[rid] = (callback, timer, _probe)
         log.debug("-> %s", msg)
         self._sock.write(QByteArray(json.dumps(msg).encode() + b"\n"))
         self._sock.flush()
@@ -145,8 +162,16 @@ class DaemonClient(QObject):
 
     def _on_timeout(self, rid: int) -> None:
         entry = self._pending.pop(rid, None)
-        if entry and entry[0]:
-            entry[0](None, {"code": "timeout", "message": "orbitd did not answer"})
+        if entry is None or entry[0] is None:
+            return
+        cb, _, probe = entry
+        unresponsive = {"code": ORBITD_UNRESPONSIVE, "message": "orbitd isn't responding"}
+        if probe:
+            cb(None, unresponsive)
+            return
+        log.warning("request %s timed out; pinging orbitd", rid)
+        self.request("status", None, lambda r, e: cb(None, unresponsive if e else {
+            "code": "timeout", "message": "no answer from the phone in time"}), _probe=True)
 
     def _on_ready_read(self) -> None:
         self._buf += bytes(self._sock.readAll().data())
@@ -169,7 +194,7 @@ class DaemonClient(QObject):
         entry = self._pending.pop(msg.get("id"), None) if isinstance(msg.get("id"), int) else None
         if entry is None:
             return
-        cb, timer = entry
+        cb, timer, _ = entry
         timer.stop()
         if cb is None:
             if "error" in msg:
@@ -219,7 +244,7 @@ class DaemonClient(QObject):
     def _on_art(self, key: str, result: Any, error: dict | None) -> None:
         if error or not isinstance(result, dict):
             log.debug("art %s unavailable: %s", key, error)
-            if error and error.get("code") in ("not_connected", "timeout"):
+            if error and error.get("code") in ("not_connected", "timeout", ORBITD_DOWN, ORBITD_UNRESPONSIVE):
                 self._art_requested.discard(key)
             return
         pix = QPixmap()

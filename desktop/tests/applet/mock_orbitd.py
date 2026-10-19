@@ -334,7 +334,10 @@ class MockOrbitd:
         self.socket_path = socket_path
         self.evolve = evolve
         self.tick_s = tick_s
-        self.fail_next_action: str | None = None
+        # A str fails the next action with {"ok": false, "error": str}; a dict answers it with that error.
+        self.fail_next_action: str | dict | None = None
+        # Accept connections and requests but never answer (a wedged orbitd).
+        self.unresponsive = False
         self.action_delay_s: float = 0.0
         # How long activities.action waits for a "reconnecting" device (orbitd: 5 s).
         self.reconnect_hold_s: float = 5.0
@@ -860,6 +863,8 @@ class MockOrbitd:
             self._requests.append(record)
         if self.on_request:
             self.on_request(copy.deepcopy(record))
+        if self.unresponsive:
+            return
 
         if method == "activities.action":
             fail, self.fail_next_action = self.fail_next_action, None
@@ -903,6 +908,9 @@ class MockOrbitd:
                 snap = self._snapshot()
                 for name in ("devices", "pairing", "activities"):
                     conn.send(self._event(name, snap))
+                return
+            if method == "activities.action" and isinstance(fail, dict):
+                conn.send({"id": req_id, "error": fail})
                 return
             if method == "activities.action" and fail is not None:
                 result: Any = {"ok": False, "error": fail}

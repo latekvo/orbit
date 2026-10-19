@@ -112,12 +112,31 @@ def devices_summary(devices: list[Mapping[str, Any]]) -> str:
     return "No phone connected"
 
 
-def is_reconnecting_error(error: Mapping[str, Any] | None) -> bool:
-    """orbitd held the action for a reconnecting phone and gave up, or lost the link mid-action."""
-    if not error or error.get("code") != "not_connected":
-        return False
-    message = str(error.get("message") or "")
-    return message == "reconnecting" or message.startswith("connection lost")
+# Error codes the client reports itself, next to orbitd's own (LOCAL_API.md).
+ORBITD_DOWN = "orbitd_down"
+ORBITD_UNRESPONSIVE = "orbitd_unresponsive"
+
+
+def action_failure(error: Mapping[str, Any] | None, result: Any, phone: str, label: str) -> tuple[str, bool]:
+    """What to tell the user about a failed activities.action, and whether it is a gentle notice
+    (the phone may still get it) rather than an error."""
+    if not error:
+        reason = result.get("error") if isinstance(result, Mapping) else None
+        return f"{label}: {reason or 'failed'}", False
+    code, message = error.get("code"), str(error.get("message") or "")
+    if "may have been applied" in message:
+        return "Connection dropped - the action may have gone through", True
+    if code == "not_connected":
+        if message == "reconnecting":
+            return f"Reconnecting to {phone}...", True
+        return f"{phone} is offline", False
+    if code == "timeout":
+        return f"{phone} didn't respond", False
+    if code == "not_paired":
+        return f"{phone} isn't paired", False
+    if code in (ORBITD_DOWN, ORBITD_UNRESPONSIVE):
+        return message, False
+    return f"{label}: {message or code or 'failed'}", False
 
 
 def activity_key(activity: Mapping[str, Any]) -> tuple[str, str]:

@@ -98,6 +98,7 @@ QToolButton {{ color: {t.text}; background: transparent; border: none; border-ra
 QToolButton:hover {{ background: {t.hover}; }}
 QToolButton:pressed {{ background: {t.border}; }}
 QToolButton:disabled {{ color: {t.muted}; }}
+QToolButton[pending="true"] {{ color: {t.muted}; }}
 QToolButton[role="pill"] {{ background: {t.field}; border: 1px solid {t.border}; padding: 3px 8px;
     font-size: 12px; }}
 QToolButton[role="pill"]:hover {{ background: {t.hover}; }}

@@ -69,17 +69,25 @@ def test_devices_summary():
     assert model.devices_summary([d("Stranger", "connected", paired=False)]) == "No phone connected"
 
 
-@pytest.mark.parametrize("error, gentle", [
-    ({"code": "not_connected", "message": "reconnecting"}, True),
+@pytest.mark.parametrize("error, result, text, gentle", [
+    ({"code": "not_connected", "message": "reconnecting"}, None, "Reconnecting to Pixel 8...", True),
     ({"code": "not_connected", "message": "connection lost after the action was sent; it may have been applied"},
-     True),
-    ({"code": "not_connected", "message": "device is not connected"}, False),
-    ({"code": "not_connected", "message": "orbitd is not running"}, False),
-    ({"code": "timeout", "message": "reconnecting"}, False),
-    (None, False),
+     None, "Connection dropped - the action may have gone through", True),
+    ({"code": "failed", "message": "write failed; it may have been applied"}, None,
+     "Connection dropped - the action may have gone through", True),
+    ({"code": "not_connected", "message": "device is not connected"}, None, "Pixel 8 is offline", False),
+    ({"code": "timeout", "message": "phone did not answer"}, None, "Pixel 8 didn't respond", False),
+    ({"code": "not_paired", "message": "device is not paired"}, None, "Pixel 8 isn't paired", False),
+    ({"code": model.ORBITD_DOWN, "message": "orbitd is not running"}, None, "orbitd is not running", False),
+    ({"code": model.ORBITD_UNRESPONSIVE, "message": "orbitd isn't responding"}, None,
+     "orbitd isn't responding", False),
+    ({"code": "bad_request", "message": "media.seek needs an integer"}, None, "Next: media.seek needs an integer",
+     False),
+    (None, {"ok": False, "error": "phone is locked"}, "Next: phone is locked", False),
+    (None, None, "Next: failed", False),
 ])
-def test_is_reconnecting_error(error, gentle):
-    assert model.is_reconnecting_error(error) is gentle
+def test_action_failure_text(error, result, text, gentle):
+    assert model.action_failure(error, result, "Pixel 8", "Next") == (text, gentle)
 
 
 # -- mock ------------------------------------------------------------------------------------
@@ -221,7 +229,7 @@ def test_held_action_failing_with_reconnecting_is_gentle(qtbot, client, mock):
     mock.drop_device(PIXEL_8)
     media.trigger("media.next")
     qtbot.waitUntil(lambda: media.error.isVisibleTo(panel), timeout=3000)
-    assert media.error.text() == "Still reconnecting to Pixel 8 - try again in a moment"
+    assert media.error.text() == "Reconnecting to Pixel 8..."
     assert media.error.property("role") == "notice"
     assert media.error.palette().color(media.error.foregroundRole()).name() == LIGHT.muted
 

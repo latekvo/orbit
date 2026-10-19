@@ -87,6 +87,14 @@ def main() -> None:
                 media.trigger("media.pause" if mode == "light" else "media.play")
                 wait(300)
                 save(panel, f"toggled-{mode}")
+                mock.action_delay_s = 3
+                media.trigger("media.next")
+                download = next(c for c in panel.activities_page.cards.values() if c.activity["kind"] == "progress")
+                download.trigger(download.activity["actions"][0]["id"])
+                wait(400)
+                save(panel, f"pending-{mode}")
+                mock.action_delay_s = 0
+                wait(3000)
                 bar = panel.activities_page.scroll.verticalScrollBar()
                 bar.setValue(bar.maximum())
                 wait(100)

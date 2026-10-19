@@ -16,10 +16,11 @@ from shiboken6 import isValid
 from . import actions as acts
 from . import icons
 from .client import DaemonClient
-from .model import chrono_value_ms, format_clock, is_reconnecting_error, media_position_ms, now_ms
+from .model import action_failure, chrono_value_ms, format_clock, media_position_ms, now_ms
 from .theme import Theme
 
 ERROR_VISIBLE_MS = 5000
+SPIN_FRAME_MS = 60
 STALE_OPACITY = 0.55
 PILL_MAX_TEXT = 120
 
@@ -326,6 +327,9 @@ class ActivityCard(QFrame):
         self._open_listed = False
         self._optimistic_media: dict | None = None
         self._pending: set[str] = set()
+        self._spin_angle = 0
+        self._spin = QTimer(self, interval=SPIN_FRAME_MS)
+        self._spin.timeout.connect(self._spin_step)
         # While stale, extrapolation stops at the moment the card went stale.
         self._frozen_at: float | None = None
 
@@ -520,6 +524,7 @@ class ActivityCard(QFrame):
 
         self._rebuild_actions()
         self._sync_enabled()
+        self._spin_frame()
         self.tick(now_ms())
 
     def _load_art(self) -> None:
@@ -625,16 +630,23 @@ class ActivityCard(QFrame):
             self.action_strip.set_menu_only(menu_only, lambda aid: self.trigger(aid))
 
     def _sync_enabled(self) -> None:
-        """Pending actions and a stale card disable their controls; fresh data re-enables them."""
+        """A stale card disables its controls until fresh data arrives. A pending action's button
+        stays enabled-looking but busy (see trigger), so the press reads as accepted."""
         stale = self.stale
         hint = f"Reconnecting to {self.device_name()}" if stale else None
         for aid, btn in self._buttons.items():
+            pending = aid in self._pending
             if aid in self._inputs:
                 field = self._inputs[aid]
-                field.setEnabled(aid not in self._pending)
-                btn.setEnabled(not stale and aid not in self._pending and bool(field.text().strip()))
+                field.setEnabled(not pending)
+                btn.setEnabled(not stale and (pending or bool(field.text().strip())))
             else:
-                btn.setEnabled(not stale and aid not in self._pending)
+                btn.setEnabled(not stale)
+            if bool(btn.property("pending")) != pending:
+                btn.setProperty("pending", pending)
+                btn.setCursor(Qt.CursorShape.BusyCursor if pending else Qt.CursorShape.PointingHandCursor)
+                btn.style().unpolish(btn)
+                btn.style().polish(btn)
             btn.setToolTip(hint or btn.property("label") or "")
         if self.action_strip is not None:
             self.action_strip.more.setEnabled(not stale)
@@ -724,10 +736,12 @@ class ActivityCard(QFrame):
         return box
 
     def trigger(self, action_id: str, value: Any = None) -> None:
-        if self.stale:
+        if self.stale or action_id in self._pending:
             return
         self._pending.add(action_id)
         self._sync_enabled()
+        self._spin_frame()
+        self._spin.start()
         device, activity = self.device_id, self.activity_id
 
         def done(result: Any, error: dict | None) -> None:
@@ -735,23 +749,47 @@ class ActivityCard(QFrame):
                 return
             ok = error is None and isinstance(result, dict) and result.get("ok") is True
             self._pending.discard(action_id)
+            if not self._pending:
+                self._spin.stop()
             field = self._inputs.get(action_id)
-            if ok and field is not None:
-                field.clear()
+            if ok:
+                self.error.hide()
+                if field is not None:
+                    field.clear()
             self._sync_enabled()
+            self._restore_icon(action_id)
             if action_id == "media.seek" and not ok:
                 self._optimistic_media = None
                 self.tick(now_ms())
-            if is_reconnecting_error(error):
-                message = (error or {}).get("message")
-                self.show_error(f"Still reconnecting to {self.device_name()} - try again in a moment"
-                                if message == "reconnecting" else f"{self._action_label(action_id)}: {message}",
-                                gentle=True)
-            elif not ok:
-                reason = (error or {}).get("message") or (result or {}).get("error") or "failed"
-                self.show_error(f"{self._action_label(action_id)}: {reason}")
+            if not ok:
+                text, gentle = action_failure(error, result, self.device_name(), self._action_label(action_id))
+                self.show_error(text, gentle=gentle)
 
         self.client.action(device, activity, action_id, value, done)
+
+    def _spin_step(self) -> None:
+        self._spin_angle = (self._spin_angle + 30) % 360
+        self._spin_frame()
+
+    def _spin_frame(self) -> None:
+        """Pending buttons that carry a glyph show a spinner in its place (same size, no shift)."""
+        for aid in self._pending:
+            btn = self._buttons.get(aid)
+            if btn is None or btn.icon().isNull():
+                continue
+            primary = btn.property("kind") == "transport" and aid in ("media.play", "media.pause")
+            btn.setIcon(icons.spinner("#ffffff" if primary else self.accent(), self._spin_angle))
+
+    def _restore_icon(self, action_id: str) -> None:
+        btn = self._buttons.get(action_id)
+        if btn is None:
+            return
+        if action_id in self._inputs:
+            btn.setIcon(icons.icon("send", self.accent()))
+            return
+        action = next((x for x in self.activity.get("actions") or [] if x.get("id") == action_id), None)
+        if action is not None:
+            self._style_button(btn, action)
 
     def _action_label(self, action_id: str) -> str:
         if action_id == "media.seek":

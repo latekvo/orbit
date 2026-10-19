@@ -109,3 +109,11 @@ class _SvgEngine(QIconEngine):
 def icon(name: str, color: QColor | str) -> QIcon | None:
     data = svg_for(name, QColor(color).name())
     return QIcon(_SvgEngine(data)) if data else None
+
+
+def spinner(color: QColor | str, angle: int) -> QIcon:
+    """One frame of a busy indicator: a three-quarter ring rotated by `angle` degrees."""
+    data = (f'<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><g transform="rotate({angle} 12 12)">'
+            f'<path d="M12 5a7 7 0 1 1-7 7" fill="none" stroke="{QColor(color).name()}" stroke-width="2.4" '
+            f'stroke-linecap="round"/></g></svg>').encode()
+    return QIcon(_SvgEngine(data))
