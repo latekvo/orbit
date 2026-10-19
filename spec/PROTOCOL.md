@@ -54,7 +54,8 @@ uint32 big-endian  length of body (1 .. 1048576)
 bytes[length]      body
 ```
 
-A frame with length 0 or > 1 MiB is a protocol error (close the stream).
+A frame with length 0 or > 1 MiB is a protocol error (close the stream). Handshake frames
+(3.2) are at most 4096 bytes; a longer one is a protocol error too.
 Handshake bodies are UTF-8 JSON. After the handshake every body is an encrypted record
 (section 4) whose plaintext is UTF-8 JSON.
 
@@ -139,6 +140,8 @@ Pairing:
 4. When a side has sent *and* received `accepted:true` it pins the peer, and the session
    becomes paired (R then sends `snapshot`). Any `accepted:false` -> both close.
 5. Pairing that is not completed within 120 s is abandoned (close).
+
+R closes a session that is neither paired nor pairing 30 s after the handshake.
 
 `{"t":"unpair"}` from either side: the receiver removes the pin and closes.
 

@@ -18,8 +18,17 @@ import kotlinx.serialization.json.JsonObject
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledThreadPoolExecutor
+import java.util.concurrent.ThreadFactory
 
 const val TAG = "Orbit"
+
+/** Daemon threads whose uncaught throwables go to [onUncaught] instead of the process-killing default handler. */
+internal fun daemonThreads(name: String, onUncaught: (Throwable) -> Unit) = ThreadFactory { r ->
+    Thread(r, name).apply {
+        isDaemon = true
+        setUncaughtExceptionHandler { _, e -> onUncaught(e) }
+    }
+}
 
 /** Executes `action` messages against the activity sources (implemented by the listener service). */
 fun interface ActionExecutor {
@@ -52,8 +61,9 @@ class Orbit private constructor(private val context: Context) : SessionHost {
     val hub = ActivityHub()
     val scheduler = ScheduledThreadPoolExecutor(2).apply { removeOnCancelPolicy = true }
     val publisher = ActivityPublisher(hub, scheduler)
-    private val sessionThreads = Executors.newCachedThreadPool { r -> Thread(r, "orbit-session").apply { isDaemon = true } }
+    private val sessionThreads = Executors.newCachedThreadPool(daemonThreads("orbit-session") { Log.e(TAG, "session thread died", it) })
     private val sessions = ConcurrentHashMap<Long, ResponderSession>()
+    private val unauthenticated = UnauthenticatedSessions(MAX_UNAUTHENTICATED, MAX_UNAUTHENTICATED_PER_ADDRESS)
 
     @Volatile var actionExecutor: ActionExecutor? = null
 
@@ -92,9 +102,17 @@ class Orbit private constructor(private val context: Context) : SessionHost {
         if (transports.value.serviceRunning) OrbitService.start(context, OrbitService.ACTION_RENAME)
     }
 
-    /** Runs a responder session over [stream] on a background thread. */
-    fun startSession(stream: ByteStream, transport: String) {
+    /**
+     * Runs a responder session over [stream] on a background thread. A session from a network
+     * [address] counts against the unpaired-session limits and is refused (stream closed) beyond them.
+     */
+    fun startSession(stream: ByteStream, transport: String, address: String? = null) {
         val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler)
+        if (address != null && !unauthenticated.admit(session.id, address)) {
+            Log.w(TAG, "refusing $transport session from $address: too many unpaired sessions")
+            runCatching { stream.close() }
+            return
+        }
         sessions[session.id] = session
         sessionChanged(session)
         sessionThreads.execute {
@@ -105,7 +123,8 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     fun session(id: Long): ResponderSession? = sessions[id]
 
-    fun shutdownSessions(reason: String) = sessions.values.forEach { it.shutdown(reason) }
+    /** Sends `bye` on every session and closes it once flushed; returns those sessions. */
+    fun shutdownSessions(reason: String): List<ResponderSession> = sessions.values.toList().onEach { it.shutdown(reason) }
 
     /** Closes sessions using [transport] (e.g. when BLE goes away). */
     fun closeSessions(transport: String, reason: String) =
@@ -132,6 +151,9 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     override fun sessionChanged(session: ResponderSession) {
         if (session.state == ResponderSession.State.CLOSED) sessions.remove(session.id)
+        if (session.state == ResponderSession.State.PAIRED || session.state == ResponderSession.State.CLOSED) {
+            unauthenticated.release(session.id)
+        }
         if (session.state == ResponderSession.State.PAIRING && session.localDecision == null) {
             pairingNotifier.show(session)
         } else {
@@ -155,6 +177,8 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     companion object {
         private const val KEY_NAME = "device_name"
+        private const val MAX_UNAUTHENTICATED = 16
+        private const val MAX_UNAUTHENTICATED_PER_ADDRESS = 4
         @Volatile private var instance: Orbit? = null
 
         fun get(context: Context): Orbit = instance ?: synchronized(this) {
