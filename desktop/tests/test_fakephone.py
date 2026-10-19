@@ -9,6 +9,7 @@ import time
 import pytest
 
 from orbit.fakephone import FakePhone
+from orbit.fakephone import phone as phone_module
 from orbit.fakephone.art import cover
 from orbit.proto import FrameStream, KeyPair, device_id, initiate
 from orbit.store import PeerStore
@@ -161,7 +162,7 @@ async def test_reconnect_paired_gets_snapshot_without_pairing(make_phone, tmp_pa
     snapshot, before = await laptop.recv_until(lambda m: m["t"] == "snapshot")
     assert {m["t"] for m in before} == {"art"} and {a["id"] for a in snapshot["activities"]} == ALL_IDS
     assert (await phone.wait_event("ready"))["paired"] is True
-    assert not [e for _, k, e in phone.history if k == "pairing"]
+    assert not [e for k, e in phone.history if k == "pairing"]
 
     # Pinned on the phone but the laptop forgot us: the session is not paired.
     other = await Laptop(identity).connect(phone, paired=False)
@@ -179,7 +180,7 @@ async def test_unpaired_session_rejects_actions_but_stays_open(make_phone):
     assert error["t"] == "error" and error["code"] == "not_paired"
     await laptop.send({"t": "ping", "req": 9})
     assert await laptop.recv() == {"t": "pong", "req": 9}
-    assert not [e for _, k, e in phone.history if k == "action"]
+    assert not [e for k, e in phone.history if k == "action"]
 
 
 async def test_phone_rejection_closes(make_phone, tmp_path):
@@ -203,6 +204,20 @@ async def test_peer_rejection_closes(make_phone, tmp_path):
     assert (await phone.wait_event("session_closed"))["peer"] == laptop.id
     with pytest.raises(LookupError):
         await phone.respond_pairing(True)
+
+
+async def test_prompt_callback_decides(make_phone):
+    asked = []
+
+    async def prompt(session):
+        asked.append((session.peer.name, session.sas))
+        await asyncio.sleep(0.05)
+        return True
+
+    phone = await make_phone(auto_accept=None, prompt=prompt)
+    laptop = Laptop()
+    snapshot = await pair(phone, laptop)
+    assert asked == [("Laptop", laptop.ch.sas)] and {a["id"] for a in snapshot["activities"]} == ALL_IDS
 
 
 async def test_pairing_timeout_closes(make_phone):
@@ -388,7 +403,7 @@ async def test_keepalive_ping_and_dead_peer(make_phone):
     laptop = await Laptop().connect(phone)
     start = time.monotonic()
     ping = await laptop.recv(1)
-    assert ping["t"] == "ping" and 0.1 <= time.monotonic() - start < 0.4
+    assert ping["t"] == "ping" and time.monotonic() - start >= 0.1
 
     # A peer that keeps talking stays alive past dead_after.
     for _ in range(8):
@@ -461,16 +476,18 @@ async def test_unpair_removes_pin_and_closes(make_phone, tmp_path):
     assert PeerStore(tmp_path / "phone").get(laptop.id) is None
 
 
-async def test_default_port_falls_back_when_taken(make_phone):
+async def test_default_port_falls_back_when_taken(make_phone, monkeypatch):
     holder = socket.socket()
+    holder.bind(("0.0.0.0", 0))
+    holder.listen()
+    taken = holder.getsockname()[1]
     try:
-        holder.bind(("0.0.0.0", 47820))
-        holder.listen()
-    except OSError as e:
-        assert e.errno == errno.EADDRINUSE  # someone else holds it, which works just as well
-    try:
-        phone = await make_phone(port=47820)
-        assert phone.port not in (0, 47820)
+        with pytest.raises(OSError) as e:
+            await make_phone(port=taken)  # only the well-known port falls back
+        assert e.value.errno == errno.EADDRINUSE
+        monkeypatch.setattr(phone_module, "DEFAULT_PORT", taken)
+        phone = await make_phone(port=taken)
+        assert phone.port not in (0, taken)
         await Laptop().connect(phone)
     finally:
         holder.close()

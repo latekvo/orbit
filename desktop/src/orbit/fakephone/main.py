@@ -56,7 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--config-dir", type=_path, default=None, help="identity and pins (default: <orbit config>/fakephone)"
     )
     p.add_argument("--host", default="0.0.0.0", help="address to listen on (default 0.0.0.0)")
-    p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"TCP port, 0 = any (default {DEFAULT_PORT})")
+    p.add_argument(
+        "--port",
+        type=int,
+        default=DEFAULT_PORT,
+        help=f"TCP port, 0 = any (default {DEFAULT_PORT}, falls back to any free port if taken)",
+    )
     p.add_argument("--no-mdns", action="store_true", help="do not advertise _orbit._tcp")
     decision = p.add_mutually_exclusive_group()
     decision.add_argument("--auto-accept", action="store_true", help="accept every pairing request")

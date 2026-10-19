@@ -43,10 +43,11 @@ class Advertiser:
 
     async def register(self) -> None:
         # allow_name_change: a second fake phone with the same name becomes "Name (2)".
-        await self._zc.async_register_service(self.info, allow_name_change=True)
+        # Each call returns a second awaitable that completes once the announcements/goodbyes are on the wire.
+        await (await self._zc.async_register_service(self.info, allow_name_change=True))
 
     async def close(self) -> None:
         try:
-            await self._zc.async_unregister_service(self.info)
+            await (await self._zc.async_unregister_service(self.info))
         finally:
             await self._zc.async_close()

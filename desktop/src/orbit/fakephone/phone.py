@@ -115,8 +115,10 @@ class Session:
                 self._last_recv = self._loop.time()
                 self.phone.log.debug("<- %s %s", self.id, _summary(msg))
                 self._dispatch(msg)
-        except (asyncio.IncompleteReadError, ConnectionError, OSError):
-            self.close("connection lost", flush=False)
+        except asyncio.IncompleteReadError:
+            self.close("connection closed by peer", flush=False)
+        except (ConnectionError, OSError) as e:
+            self.close(f"connection lost ({e})", flush=False)
         except ProtocolError as e:
             self.close(f"protocol error: {e}", flush=False)
 
@@ -194,7 +196,7 @@ class Session:
 
     def decide(self, accept: bool) -> None:
         if self.closed or not self.pairing or self.local_decision is not None:
-            raise RuntimeError(f"session {self.id} has no pending pairing decision")
+            raise LookupError(f"session {self.id} has no pending pairing decision")
         if self._prompt_task and self._prompt_task is not asyncio.current_task():
             self._prompt_task.cancel()
         self.local_decision = accept
@@ -323,7 +325,7 @@ class FakePhone:
         self.frozen = False
         self.art: dict[str, bytes] = {}
         self.events: asyncio.Queue[tuple[str, dict[str, Any]]] = asyncio.Queue(maxsize=EVENT_LIMIT)
-        self.history: deque[tuple[int, str, dict[str, Any]]] = deque(maxlen=EVENT_LIMIT)
+        self._log: deque[tuple[int, str, dict[str, Any]]] = deque(maxlen=EVENT_LIMIT)
         self.advertiser: Advertiser | None = None
 
         self._seq = 0
@@ -349,6 +351,11 @@ class FakePhone:
     def sessions(self) -> list[Session]:
         """Live (not yet closed) sessions, oldest first."""
         return list(self._sessions)
+
+    @property
+    def history(self) -> list[tuple[str, dict[str, Any]]]:
+        """Every event so far as (kind, data), oldest first (the last 10000)."""
+        return [(kind, data) for _, kind, data in self._log]
 
     @property
     def activities(self) -> dict[str, dict[str, Any]]:
@@ -459,7 +466,7 @@ class FakePhone:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + timeout
         while True:
-            for seq, k, data in self.history:
+            for seq, k, data in self._log:
                 if k == kind and seq not in self._consumed and (predicate is None or predicate(data)):
                     self._consumed.add(seq)
                     return data
@@ -468,7 +475,7 @@ class FakePhone:
             try:
                 await asyncio.wait_for(waiter, max(0.0, deadline - loop.time()))
             except TimeoutError:
-                recent = [k for _, k, _ in list(self.history)[-10:]]
+                recent = [k for _, k, _ in list(self._log)[-10:]]
                 raise TimeoutError(f"no {kind!r} event within {timeout:g}s (recent events: {recent})") from None
             finally:
                 with contextlib.suppress(ValueError):
@@ -478,7 +485,7 @@ class FakePhone:
 
     def _emit(self, kind: str, data: dict[str, Any]) -> None:
         self._seq += 1
-        self.history.append((self._seq, kind, data))
+        self._log.append((self._seq, kind, data))
         if self.events.full():
             self.events.get_nowait()
         self.events.put_nowait((kind, data))

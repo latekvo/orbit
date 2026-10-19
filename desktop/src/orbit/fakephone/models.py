@@ -226,7 +226,7 @@ class Download(Model):
     app = {"id": "com.example.browser", "name": "Fake Browser"}
     file_name = "ubuntu-24.04.iso"
     size_gb = 5.7
-    step = 1.5  # mean percent per tick (jittered), ~65 ticks per download
+    step = 1.5  # mean percent per tick (jittered, always >= 1), ~67 ticks per download
     linger_ticks = 5  # "Download complete" stays this long before it is removed
     restart_ticks = 15  # idle ticks before the next download starts
 
@@ -258,7 +258,7 @@ class Download(Model):
         self._ticks_in_state += 1
         if self.state == "downloading":
             before = self.value
-            self.progress = min(100.0, self.progress + self.step * self._rng.uniform(0.5, 1.5))
+            self.progress = min(100.0, self.progress + self.step * self._rng.uniform(0.7, 1.3))
             if self.progress >= 100:
                 self.state = "complete"
                 self.completed += 1
