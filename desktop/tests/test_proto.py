@@ -118,3 +118,48 @@ async def test_oversize_record_is_refused_without_desyncing_the_channel():
         assert e.value.code == "bad_frame"
         await ch.send({"t": "ping", "req": 1})
         assert await asyncio.wait_for(received, 5) == {"t": "ping", "req": 1}
+
+
+@pytest.mark.parametrize("size", [4096, 4097])
+async def test_responder_caps_handshake_frames_at_4096_bytes(size):
+    outcome = asyncio.get_running_loop().create_future()
+
+    async def serve(stream):
+        try:
+            await respond(stream, KeyPair.generate(), "Phone", "android")
+        except ProtocolError as e:
+            outcome.set_result(e.code)
+
+    async with tcp_pair(serve) as stream:
+        await stream.write_frame(b" " * size)  # a commit that is only whitespace
+        code = await asyncio.wait_for(outcome, 5)
+    assert (code == "bad_frame") == (size > 4096)
+
+
+@pytest.mark.parametrize("size", [4096, 4097])
+async def test_initiator_caps_handshake_frames_at_4096_bytes(size):
+    async def serve(stream):
+        await stream.read_frame()
+        await stream.write_frame(b" " * size)  # in place of hello
+
+    async with tcp_pair(serve) as stream:
+        with pytest.raises(ProtocolError) as e:
+            await initiate(stream, KeyPair.generate(), "Laptop", "macos")
+    assert (e.value.code == "bad_frame") == (size > 4096)
+
+
+async def test_oversize_own_hello_is_not_sent_and_records_stay_large():
+    async with tcp_pair(lambda s: respond(s, KeyPair.generate(), "P", "android")) as stream:
+        with pytest.raises(ProtocolError, match="frame length"):
+            await initiate(stream, KeyPair.generate(), "n" * 5000, "macos")
+
+    result = asyncio.get_running_loop().create_future()
+
+    async def serve(stream):
+        ch = await respond(stream, KeyPair.generate(), "Phone", "android")
+        result.set_result(await ch.recv())
+
+    async with tcp_pair(serve) as stream:
+        ch = await initiate(stream, KeyPair.generate(), "Laptop", "macos")
+        await ch.send({"t": "x", "pad": "p" * 100_000})  # records keep the 1 MiB limit
+        assert len((await asyncio.wait_for(result, 5))["pad"]) == 100_000
