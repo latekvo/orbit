@@ -41,6 +41,8 @@ class Route:
     open: Callable[[], Awaitable[FrameStream]]
     expected: str | None = None
     manual: bool = False
+    # For a provisional device: the responder's real id must start with this advertised prefix.
+    prefix: str | None = None
 
 
 @dataclass
@@ -65,6 +67,8 @@ class Device:
     connector: asyncio.Task | None = None
     # Cleared by devices.disconnect so the device is not reconnected until the user asks again.
     auto: bool = True
+    # Seen only via BLE and never connected: ``id`` is the advertised 16-hex prefix (spec/LOCAL_API.md).
+    provisional: bool = False
 
 
 def format_hostport(host: str, port: int) -> str:
@@ -101,6 +105,7 @@ class Daemon:
         pairing_timeout: float = 120.0,
         action_timeout: float = 10.0,
         connect_timeout: float = 10.0,
+        tcp_timeout: float = 3.0,
     ) -> None:
         from .api import ApiServer
 
@@ -115,6 +120,7 @@ class Daemon:
         self.pairing_timeout = pairing_timeout
         self.action_timeout = action_timeout
         self.connect_timeout = connect_timeout
+        self.tcp_timeout = tcp_timeout
         self.devices: dict[str, Device] = {}
         self.sessions: dict[str, Session] = {}
         self.api = ApiServer(self, socket_path)
@@ -218,6 +224,7 @@ class Daemon:
             "transport": s.transport if s else None,
             "address": address,
             "discovered": (["lan"] if dev.lan else []) + (["ble"] if self._ble_visible(dev) else []),
+            "provisional": dev.provisional,
         }
 
     def devices_json(self) -> list[dict[str, Any]]:
@@ -275,7 +282,10 @@ class Daemon:
             from .ble import open_ble
 
             ble = dev.ble
-            routes.append(Route("ble", ble.address, lambda: open_ble(ble), dev.id))
+            if dev.provisional:
+                routes.append(Route("ble", ble.address, lambda: open_ble(ble), prefix=dev.id))
+            else:
+                routes.append(Route("ble", ble.address, lambda: open_ble(ble), dev.id))
         return routes
 
     # ---- discovery callbacks ---------------------------------------------------------------
@@ -289,6 +299,7 @@ class Daemon:
         if info is None:
             return
         dev = self._device(info["id"])
+        self._absorb_provisional(dev)
         dev.lan[instance] = LanRecord(info["name"], info["platform"], info["addresses"])
         if not dev.name:
             dev.name = info["name"]
@@ -300,15 +311,31 @@ class Daemon:
         if dev.session and dev.session.transport == "ble" and dev.auto:
             self._spawn(self._upgrade_to_lan(dev))
 
-    def on_ble(self, prefix: str, ble_device: Any) -> None:
-        for dev in self.devices.values():
-            if dev.id.startswith(prefix) and self.store.get(dev.id):
-                fresh = not self._ble_visible(dev)
-                dev.ble, dev.ble_seen = ble_device, time.monotonic()
-                if fresh:
-                    log.info("discovered %s (%s) via BLE at %s", dev.name, dev.id, ble_device.address)
-                    self.changed("devices")
-                    dev.wake.set()
+    def on_ble(self, prefix: str, ble_device: Any, local_name: str | None = None) -> None:
+        matches = [d for d in self.devices.values() if not d.provisional and d.id.startswith(prefix)]
+        if not matches:
+            dev = self.devices.get(prefix)
+            if dev is None:
+                dev = self.devices[prefix] = Device(prefix, provisional=True)
+            dev.name = local_name or dev.name or f"Orbit device {prefix[:4]}"
+            matches = [dev]
+        for dev in matches:
+            fresh = not self._ble_visible(dev)
+            dev.ble, dev.ble_seen = ble_device, time.monotonic()
+            if fresh:
+                log.info("discovered %s (%s) via BLE at %s", dev.name, dev.id, ble_device.address)
+                self.changed("devices")
+                dev.wake.set()
+
+    def _absorb_provisional(self, dev: Device) -> None:
+        """``dev``'s real id is now known: fold the provisional BLE-only entry for its prefix into it."""
+        prov = self.devices.get(dev.id[:16])
+        if prov is None or not prov.provisional:
+            return
+        del self.devices[prov.id]
+        if prov.ble is not None and prov.ble_seen > dev.ble_seen:
+            dev.ble, dev.ble_seen = prov.ble, prov.ble_seen
+        self.changed("devices")
 
     async def _ble_expiry(self) -> None:
         while True:
@@ -376,18 +403,22 @@ class Daemon:
     async def connect_routes(self, routes: list[Route], *, explicit: bool) -> Session:
         if not routes:
             raise ApiError("not_connected", "no known address for this device")
-        error: ApiError | None = None
+        errors: list[ApiError] = []
         for route in routes:
             try:
                 return await self._connect_route(route, explicit=explicit)
             except ApiError as e:
-                error = e
-        assert error is not None
-        raise error
+                errors.append(e)
+        if len(errors) == 1:
+            raise errors[0]
+        codes = {e.code for e in errors}
+        detail = "; ".join(e.message for e in errors)
+        raise ApiError(codes.pop() if len(codes) == 1 else "failed", f"all {len(errors)} addresses failed: {detail}")
 
     async def _connect_route(self, route: Route, *, explicit: bool) -> Session:
         try:
-            stream = await asyncio.wait_for(route.open(), self.connect_timeout)
+            timeout = self.tcp_timeout if route.kind == "lan" else self.connect_timeout
+            stream = await asyncio.wait_for(route.open(), timeout)
         except TimeoutError:
             raise ApiError("timeout", f"connecting to {route.address} timed out") from None
         except Exception as e:  # OSError for TCP; bleak raises its own exception types
@@ -400,6 +431,8 @@ class Daemon:
             peer = channel.peer
             if route.expected and peer.id != route.expected:
                 raise ApiError("failed", f"{route.address} is device {peer.id}, expected {route.expected}")
+            if route.prefix and not peer.id.startswith(route.prefix):
+                raise ApiError("failed", f"{route.address} is device {peer.id}, not the advertised {route.prefix}")
             session = Session(self, channel, route.kind, route.address, route.manual)
             session.local_paired = self.store.is_pinned(peer.id, peer.static)
             await session.exchange_ready(self.connect_timeout)
@@ -417,6 +450,7 @@ class Daemon:
     async def _adopt(self, session: Session, explicit: bool) -> Session:
         peer = session.peer
         dev = self._device(peer.id)
+        self._absorb_provisional(dev)
         existing = dev.session
         if existing is not None and not existing.closed.is_set():
             if not (session.transport == "lan" and existing.transport == "ble"):
@@ -561,9 +595,10 @@ class Daemon:
             return {"id": session.peer.id}
         dev = self._known(params.get("id"))
         dev.auto = True
-        if dev.session is None:
-            await self.connect_routes(self.routes(dev), explicit=True)
-        return {"id": dev.id}
+        if dev.session is not None:
+            return {"id": dev.id}
+        session = await self.connect_routes(self.routes(dev), explicit=True)
+        return {"id": session.peer.id}  # differs from the request for a provisional device
 
     async def api_disconnect(self, params: dict[str, Any]) -> bool:
         dev = self._known(params.get("id"))

@@ -83,9 +83,9 @@ class LanDiscovery:
 
 
 class BleDiscovery:
-    """Scan for the Orbit service UUID; calls ``on_seen(id_prefix_hex16, BLEDevice)`` per advertisement."""
+    """Scan for the Orbit service UUID; calls ``on_seen(id_prefix_hex16, BLEDevice, local_name)`` per advertisement."""
 
-    def __init__(self, on_seen: Callable[[str, Any], None]) -> None:
+    def __init__(self, on_seen: Callable[[str, Any, str | None], None]) -> None:
         self._on_seen = on_seen
         self._scanner = None
 
@@ -110,4 +110,4 @@ class BleDiscovery:
     def _detected(self, device: Any, adv: Any) -> None:
         data = adv.service_data.get(SERVICE_UUID)
         if data and len(data) >= 8:
-            self._on_seen(bytes(data[:8]).hex(), device)
+            self._on_seen(bytes(data[:8]).hex(), device, adv.local_name)
