@@ -258,3 +258,30 @@ async def test_second_daemon_refuses_live_socket(make_daemon, short_tmp):
     other = Daemon(short_tmp / "other", "Other", daemon.api.path, mdns=False, ble=False)
     with pytest.raises(AlreadyRunning):
         await other.start()
+
+
+async def test_unbindable_socket_is_a_startup_error(short_tmp):
+    from orbit.daemon.api import StartupError
+    from orbit.daemon.core import Daemon
+
+    too_long = short_tmp / ("s" * 200) / "orbitd.sock"
+    with pytest.raises(StartupError, match="cannot listen on"):
+        await Daemon(short_tmp / "cfg", "D", too_long, mdns=False, ble=False).start()
+
+
+def test_orbitd_reports_startup_error_cleanly(short_tmp, capsys):
+    from orbit.daemon.main import main
+
+    with pytest.raises(SystemExit) as e:
+        main(
+            [
+                "--config-dir",
+                str(short_tmp / "cfg"),
+                "--socket",
+                str(short_tmp / ("s" * 200) / "d.sock"),
+                "--no-mdns",
+                "--no-ble",
+            ]
+        )
+    assert e.value.code == 1
+    assert capsys.readouterr().err.startswith("orbitd: cannot listen on")

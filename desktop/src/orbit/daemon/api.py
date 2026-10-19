@@ -24,7 +24,11 @@ MAX_CLIENT_BUFFER = 32 * 1024 * 1024
 CALL_TIMEOUT = 30.0  # every method answers within this (spec/LOCAL_API.md)
 
 
-class AlreadyRunning(RuntimeError):
+class StartupError(RuntimeError):
+    pass
+
+
+class AlreadyRunning(StartupError):
     pass
 
 
@@ -59,6 +63,8 @@ class ApiServer:
         old = os.umask(0o177)
         try:
             self._server = await asyncio.start_unix_server(self._handle, str(self.path), limit=LINE_LIMIT)
+        except OSError as e:
+            raise StartupError(f"cannot listen on {self.path}: {e.strerror or e}") from e
         finally:
             os.umask(old)
         os.chmod(self.path, 0o600)
