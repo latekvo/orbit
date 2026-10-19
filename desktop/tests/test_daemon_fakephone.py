@@ -6,29 +6,9 @@ import hashlib
 import os
 import stat
 
-import pytest
 from conftest import until
 
-from orbit.fakephone import FakePhone
 from orbit.store import PeerStore
-
-
-@pytest.fixture
-async def make_phone(short_tmp):
-    phones = []
-
-    async def make(config="phone", **kw):
-        kw.setdefault("mdns", False)
-        kw.setdefault("host", "127.0.0.1")
-        kw.setdefault("port", 0)
-        phone = FakePhone(short_tmp / config, **kw)
-        await phone.start()
-        phones.append(phone)
-        return phone
-
-    yield make
-    for p in phones:
-        await p.stop()
 
 
 async def pair(api, phone):

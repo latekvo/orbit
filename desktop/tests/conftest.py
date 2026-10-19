@@ -7,6 +7,7 @@ import pytest
 
 from orbit.client import LocalClient
 from orbit.daemon.core import Daemon
+from orbit.fakephone import FakePhone
 from orbit.proto import FrameStream, KeyPair, respond
 from orbit.store import PeerStore, PinnedPeer
 
@@ -36,6 +37,25 @@ async def make_daemon(short_tmp):
     yield make
     for d in started:
         await d.stop()
+
+
+@pytest.fixture
+async def make_phone(short_tmp):
+    """Factory for started fake phones on 127.0.0.1 (random port, no mDNS)."""
+    phones = []
+
+    async def make(config="phone", **kw):
+        kw.setdefault("mdns", False)
+        kw.setdefault("host", "127.0.0.1")
+        kw.setdefault("port", 0)
+        phone = FakePhone(short_tmp / config, **kw)
+        await phone.start()
+        phones.append(phone)
+        return phone
+
+    yield make
+    for p in phones:
+        await p.stop()
 
 
 @pytest.fixture

@@ -210,17 +210,17 @@ async def cmd_pair(c: LocalClient, args: argparse.Namespace) -> None:
 
 
 async def pairing_outcome(c: LocalClient, p: dict[str, Any]) -> bool:
-    """Once the pairing session is no longer pending: did it end with the device paired and connected?"""
-    device = None
-    pending = any(x["session"] == p["session"] for x in await c.call("pairing.list"))
-    async for event, data in c.events():
-        if event == "pairing.changed":
-            pending = any(x["session"] == p["session"] for x in data["pairings"])
-        elif event == "devices.changed":
-            device = next((d for d in data["devices"] if d["id"] == p["deviceId"]), None)
-        if not pending and device is not None:
-            return bool(device["paired"] and device["connected"])
-    return False
+    """Wait until the pairing session is no longer pending; True if the device ended up paired and connected."""
+
+    def pending(pairings: list[dict[str, Any]]) -> bool:
+        return any(x["session"] == p["session"] for x in pairings)
+
+    if pending(await c.call("pairing.list")):
+        async for event, data in c.events():
+            if event == "pairing.changed" and not pending(data["pairings"]):
+                break
+    device = next((d for d in await c.call("devices.list") if d["id"] == p["deviceId"]), None)
+    return bool(device and device["paired"] and device["connected"])
 
 
 async def cmd_activities(c: LocalClient, args: argparse.Namespace) -> None:
