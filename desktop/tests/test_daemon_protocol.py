@@ -6,7 +6,7 @@ import os
 import stat
 
 import pytest
-from conftest import RawPhone, pin_in, until
+from daemon_helpers import RawPhone, pin_in, until
 
 from orbit.client import ApiError
 from orbit.daemon.timeconv import now_ms, to_local

@@ -5,7 +5,7 @@ import base64
 import hashlib
 
 import pytest
-from conftest import RawPhone, pin_in, until
+from daemon_helpers import RawPhone, pin_in, until
 
 import orbit.daemon.core as core
 from orbit.client import ApiError
@@ -252,3 +252,25 @@ async def test_crashed_connector_is_restarted(make_daemon, short_tmp, monkeypatc
         daemon = await make_daemon()
         await until(lambda: daemon.devices[phone.id].session is not None, timeout=3)
         assert len(calls) >= 2
+
+
+async def test_unreachable_advertised_addresses_fail_fast_then_next_is_tried(make_daemon, api_for):
+    async def script(ch):
+        await ready(ch, paired=False)
+        await asyncio.sleep(30)
+
+    blackholes = [("192.0.2.1", 47820), ("192.0.2.2", 47820)]  # TEST-NET: never answers
+    async with RawPhone(script) as phone:
+        daemon = await make_daemon(tcp_timeout=0.3, connect_timeout=5)
+        api = await api_for(daemon)
+        info = {"id": phone.id, "name": "Emu", "platform": "android", "addresses": blackholes}
+        daemon.on_lan("Emu._orbit._tcp.local.", info)
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(ApiError) as e:
+            await api.call("devices.connect", {"id": phone.id})
+        assert loop.time() - started < 1.5
+        assert "all 2 addresses failed" in e.value.message and "192.0.2.2:47820" in e.value.message
+
+        daemon.on_lan("Emu._orbit._tcp.local.", {**info, "addresses": [*blackholes, ("127.0.0.1", phone.port)]})
+        assert await api.call("devices.connect", {"id": phone.id}) == {"id": phone.id}
