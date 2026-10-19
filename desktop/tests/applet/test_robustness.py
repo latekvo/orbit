@@ -4,7 +4,7 @@
 import pytest
 from mock_orbitd import PIXEL_8
 from PySide6.QtCore import QPoint, QPointF, QSize, Qt
-from PySide6.QtGui import QWheelEvent
+from PySide6.QtGui import QColor, QIcon, QPixmap, QWheelEvent
 from PySide6.QtWidgets import QApplication, QLineEdit, QToolButton
 
 from orbit.applet import actions as acts
@@ -12,7 +12,7 @@ from orbit.applet import client as client_mod
 from orbit.applet import icons, model
 from orbit.applet.cards import ActivityCard, SeekSlider
 from orbit.applet.panel import Panel
-from orbit.applet.theme import LIGHT
+from orbit.applet.theme import DARK, LIGHT, stylesheet
 
 NOW = model.now_ms()
 BASE = {"device": PIXEL_8, "id": "x", "kind": "media", "app": {"id": "a", "name": "A"}, "title": "T", "actions": []}
@@ -225,3 +225,42 @@ def test_slow_connect_is_not_cut_short(qtbot, client, mock):
     client.request("devices.connect", {"id": PIXEL_8}, lambda r, e: results.append((r, e)))
     qtbot.waitUntil(lambda: bool(results), timeout=5000)
     assert results == [({"id": PIXEL_8}, None)]
+
+
+def _ink_columns(img, bg, inset):
+    """Columns holding anything clearly unlike the background, ignoring an `inset` frame (the border)."""
+    cols = []
+    for x in range(inset, img.width() - inset):
+        for y in range(inset, img.height() - inset):
+            c = QColor(img.pixel(x, y))
+            if abs(c.red() - bg.red()) + abs(c.green() - bg.green()) + abs(c.blue() - bg.blue()) > 60:
+                cols.append(x)
+                break
+    return cols
+
+
+@pytest.mark.parametrize("theme", [LIGHT, DARK], ids=["light", "dark"])
+def test_icon_pills_keep_a_gap_between_icon_and_text(qtbot, client, theme):
+    names = sorted(acts.WELL_KNOWN)
+    card = ActivityCard(client, theme, {**BASE, "kind": "generic", "actions": [
+        {"id": f"notif.{i}", "label": "Hang up", "icon": n} for i, n in enumerate(names)]})
+    qtbot.addWidget(card)
+    card.setStyleSheet(stylesheet(theme))
+    card.resize(2400, 400)
+    card.show()
+    gaps = {}
+    for i, name in enumerate(names):
+        btn = card.findChild(QToolButton, f"action:notif.{i}")
+        assert btn is not None and not btn.icon().isNull(), name
+        with_icon = btn.grab().toImage()
+        glyph = btn.icon()
+        blank = QPixmap(btn.iconSize())
+        blank.fill(Qt.GlobalColor.transparent)
+        btn.setIcon(QIcon(blank))  # same layout, no glyph: what remains is the label
+        text_only = btn.grab().toImage()
+        btn.setIcon(glyph)
+        icon_cols = [x for x in range(with_icon.width())
+                     if any(with_icon.pixel(x, y) != text_only.pixel(x, y) for y in range(with_icon.height()))]
+        text_cols = _ink_columns(text_only, QColor(text_only.pixel(3, text_only.height() // 2)), 3)
+        gaps[name] = min(text_cols) - max(icon_cols) - 1
+    assert min(gaps.values()) >= 4, gaps
