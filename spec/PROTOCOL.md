@@ -127,7 +127,7 @@ peer's static key pinned. A session is **paired** iff both sides send `paired:tr
 An initiator that connects to a specific known device MUST check that the responder's `id`
 is the expected one; a different `id` is a different, unpaired device.
 
-If the session is not paired, only these messages are valid: `pair_request`,
+If the session is not paired, only these messages are valid: `ready`, `pair_request`,
 `pair_decision`, `ping`, `pong`, `bye`, `error`. Anything else gets
 `{"t":"error","code":"not_paired"}`.
 
