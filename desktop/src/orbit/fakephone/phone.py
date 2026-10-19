@@ -14,13 +14,11 @@ from typing import Any
 from ..proto import FrameStream, ProtocolError, SecureChannel, device_id, respond
 from ..proto.crypto import b64e
 from ..store import PeerStore, PinnedPeer, load_or_create_identity
-from .art import art_key
+from .art import art_key, image_mime
 from .mdns import Advertiser
 from .models import ActionError, Chat, Download, Media, Model, Timer, now_ms
 
 DEFAULT_PORT = 47820
-# Valid in a session that is not paired (spec 3.4); anything else gets error "not_paired".
-UNPAIRED_ALLOWED = frozenset({"pair_request", "pair_decision", "ping", "pong", "bye", "error"})
 FLUSH_TIMEOUT = 2.0
 EVENT_LIMIT = 10_000
 
@@ -79,7 +77,8 @@ class Session:
             key = activity.get(field)
             if isinstance(key, str) and key not in self._sent_art and key in self.phone.art:
                 self._sent_art.add(key)
-                self.send({"t": "art", "key": key, "mime": "image/png", "data": b64e(self.phone.art[key])})
+                data = self.phone.art[key]
+                self.send({"t": "art", "key": key, "mime": image_mime(data), "data": b64e(data)})
 
     def send_upsert(self, activity: dict[str, Any], now: int) -> None:
         self._send_art_for(activity)
@@ -142,7 +141,7 @@ class Session:
             self._on_pair_request()
         elif t == "pair_decision":
             self._on_pair_decision(msg.get("accepted") is True)
-        elif not self.paired:
+        elif not self.paired:  # only the types above are valid before pairing (spec 3.4)
             self.send({"t": "error", "code": "not_paired", "message": f"{t} requires a paired session"})
         elif t == "action":
             self.phone._handle_action(self, msg)
@@ -231,7 +230,7 @@ class Session:
 
     def _pairing_expired(self) -> None:
         self._pair_timer = None
-        if self.pairing and not self.closed:
+        if self.pairing and not self.closed and not self.phone.frozen:
             self._pairing_failed("timeout")
 
     # -- lifecycle --------------------------------------------------------------------------------------------
@@ -447,11 +446,12 @@ class FakePhone:
     def remove(self, activity_id: str) -> bool:
         for model in self.models:
             if model.id == activity_id:
-                model.visible = False
+                model.retired = True  # its simulation keeps running but never republishes it
         return self._unpublish(activity_id)
 
     def add_art(self, data: bytes) -> str:
-        """Register an image; activities referencing the returned key get it sent first."""
+        """Register a PNG or JPEG; activities referencing the returned key get it sent first."""
+        image_mime(data)
         key = art_key(data)
         self.art[key] = data
         return key

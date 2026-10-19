@@ -19,7 +19,7 @@ from typing import Any
 from .. import __version__
 from ..client import ApiError
 from ..paths import ensure_private_dir
-from ..proto import FrameStream, ProtocolError, device_id, initiate
+from ..proto import FrameStream, device_id, initiate
 from ..store import PeerStore, PinnedPeer, load_or_create_identity
 from .session import Session
 from .timeconv import to_local
@@ -31,6 +31,7 @@ ART_MAX_BYTES = 8 * 1024 * 1024
 BLE_STALE_AFTER = 30.0
 RECONNECT_MAX_DELAY = 60.0
 STABLE_SESSION = 30.0
+CONNECTOR_RESTART_DELAY = 5.0
 
 
 @dataclass(frozen=True)
@@ -328,6 +329,15 @@ class Daemon:
     def _ensure_connector(self, dev: Device) -> None:
         if not self._stopping and (dev.connector is None or dev.connector.done()):
             dev.connector = asyncio.create_task(self._connector(dev))
+            dev.connector.add_done_callback(lambda t, d=dev: self._connector_done(d, t))
+
+    def _connector_done(self, dev: Device, task: asyncio.Task) -> None:
+        if task.cancelled() or task.exception() is None:
+            return
+        log.error("connector for %s crashed; restarting", dev.id, exc_info=task.exception())
+        if self.store.get(dev.id) and self.devices.get(dev.id) is dev:
+            loop = asyncio.get_running_loop()
+            loop.call_later(CONNECTOR_RESTART_DELAY, self._ensure_connector, dev)
 
     async def _wait_wake(self, dev: Device, timeout: float | None) -> None:
         with contextlib.suppress(TimeoutError):
@@ -335,27 +345,33 @@ class Daemon:
         dev.wake.clear()
 
     async def _connector(self, dev: Device) -> None:
-        """Keep a paired device connected: connect when reachable, reconnect with exponential backoff."""
+        """Keep a paired device connected: connect when reachable, reconnect with exponential backoff.
+
+        The backoff only resets after a session that stayed up for STABLE_SESSION, so a phone that
+        accepts and immediately drops us is not hammered.
+        """
         delay = 1.0
         while not self._stopping and self.store.get(dev.id) and self.devices.get(dev.id) is dev:
-            if dev.session is not None:
-                started = time.monotonic()
-                await dev.session.closed.wait()
-                if time.monotonic() - started >= STABLE_SESSION:
-                    delay = 1.0
-                await self._wait_wake(dev, delay)
-                delay = min(delay * 2, RECONNECT_MAX_DELAY)
-                continue
-            routes = self.routes(dev) if dev.auto else []
-            if not routes:
-                await self._wait_wake(dev, None if not dev.ble else BLE_STALE_AFTER)
-                continue
-            try:
-                await self.connect_routes(routes, explicit=False)
-            except ApiError as e:
-                log.info("connecting to %s (%s) failed: %s; retrying in %g s", dev.name, dev.id, e, delay)
-                await self._wait_wake(dev, delay)
-                delay = min(delay * 2, RECONNECT_MAX_DELAY)
+            session = dev.session
+            if session is None:
+                routes = self.routes(dev) if dev.auto else []
+                if not routes:
+                    await self._wait_wake(dev, None if not dev.ble else BLE_STALE_AFTER)
+                    continue
+                try:
+                    session = await self.connect_routes(routes, explicit=False)
+                except ApiError as e:
+                    log.info("connecting to %s (%s) failed: %s; retrying in %g s", dev.name, dev.id, e, delay)
+                    await self._wait_wake(dev, delay)
+                    delay = min(delay * 2, RECONNECT_MAX_DELAY)
+                    continue
+            started = time.monotonic()
+            await session.closed.wait()
+            dev.wake.clear()  # set by session_closed itself; only later discovery changes may cut the wait short
+            if time.monotonic() - started >= STABLE_SESSION:
+                delay = 1.0
+            await self._wait_wake(dev, delay)
+            delay = min(delay * 2, RECONNECT_MAX_DELAY)
 
     async def connect_routes(self, routes: list[Route], *, explicit: bool) -> Session:
         if not routes:
@@ -376,6 +392,7 @@ class Daemon:
             raise ApiError("timeout", f"connecting to {route.address} timed out") from None
         except Exception as e:  # OSError for TCP; bleak raises its own exception types
             raise ApiError("failed", f"cannot connect to {route.address}: {e}") from None
+        session = None
         try:
             channel = await asyncio.wait_for(
                 initiate(stream, self.identity, self.name, self.platform), self.connect_timeout
@@ -386,16 +403,16 @@ class Daemon:
             session = Session(self, channel, route.kind, route.address, route.manual)
             session.local_paired = self.store.is_pinned(peer.id, peer.static)
             await session.exchange_ready(self.connect_timeout)
+            return await self._adopt(session, explicit)
         except ApiError:
-            stream.close()
             raise
         except TimeoutError:
-            stream.close()
             raise ApiError("timeout", f"handshake with {route.address} timed out") from None
-        except (ProtocolError, asyncio.IncompleteReadError, OSError) as e:
-            stream.close()
+        except Exception as e:  # ProtocolError, IncompleteReadError, OSError, transport-specific errors
             raise ApiError("failed", f"handshake with {route.address} failed: {e}") from None
-        return await self._adopt(session, explicit)
+        finally:
+            if session is None or not session.started:
+                stream.close()
 
     async def _adopt(self, session: Session, explicit: bool) -> Session:
         peer = session.peer
@@ -429,7 +446,11 @@ class Daemon:
         session.start()
         if not session.paired:
             if explicit:
-                await session.request_pairing()
+                try:
+                    await session.request_pairing()
+                except Exception as e:
+                    await session.close(f"sending pair_request failed: {e}")
+                    raise ApiError("failed", f"sending pair_request failed: {e}") from None
                 self.changed("pairing")
             else:
                 # Only pinned devices are auto-connected; the phone no longer has us pinned.
@@ -510,8 +531,15 @@ class Daemon:
             return
         dev.art[key] = (mime, raw)
         dev.art.move_to_end(key)
-        while len(dev.art) > ART_MAX_ENTRIES or sum(len(v[1]) for v in dev.art.values()) > ART_MAX_BYTES:
-            dev.art.popitem(last=False)
+        self._evict_art(dev)
+
+    def _evict_art(self, dev: Device) -> None:
+        """LRU-evict art over the limits, never art referenced by a current activity (it is not resent)."""
+        referenced = {a.get(k) for a in dev.activities.values() for k in ("artKey", "iconKey")}
+        for key in [k for k in dev.art if k not in referenced]:
+            if len(dev.art) <= ART_MAX_ENTRIES and sum(len(v[1]) for v in dev.art.values()) <= ART_MAX_BYTES:
+                break
+            del dev.art[key]
 
     # ---- local API operations --------------------------------------------------------------
 
@@ -550,10 +578,10 @@ class Daemon:
         self.store.remove(dev.id)
         if dev.connector:
             dev.connector.cancel()
-        if dev.session:
+        if session := dev.session:
             with contextlib.suppress(Exception):
-                await asyncio.wait_for(dev.session.send({"t": "unpair"}), 2)
-            await dev.session.close("forgotten by user")
+                await asyncio.wait_for(session.send({"t": "unpair"}), 2)
+            await session.close("forgotten by user")
         dev.activities.clear()
         dev.art.clear()
         self._prune(dev)

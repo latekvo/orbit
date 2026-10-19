@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import json
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -97,6 +99,8 @@ async def resolve_device(c: LocalClient, ref: str) -> str:
     matches = [d for d in devices if d["id"] == ref] or [
         d for d in devices if d["id"].startswith(ref.lower()) or (d.get("name") or "").lower() == ref.lower()
     ]
+    if not matches and re.fullmatch(r"[0-9a-f]{32}", ref):
+        return ref  # a full id may name a device orbitd has not seen yet (orbit pair --wait)
     if len(matches) != 1:
         raise ApiError("not_found", f"{'no' if not matches else 'ambiguous'} device matching {ref!r}")
     return matches[0]["id"]
@@ -136,12 +140,7 @@ async def cmd_devices(c: LocalClient, args: argparse.Namespace) -> None:
 
 
 async def cmd_connect(c: LocalClient, args: argparse.Namespace) -> None:
-    target = args.target
-    m = re.fullmatch(r"\[?([^\[\]]+?)\]?:(\d+)", target)
-    if m and not re.fullmatch(r"[0-9a-f]{32}", target):
-        params: dict[str, Any] = {"host": m.group(1), "port": int(m.group(2))}
-    else:
-        params = {"id": await resolve_device(c, target)}
+    params = parse_address(args.target) or {"id": await resolve_device(c, args.target)}
     await c.call("subscribe")
     res = await c.call("devices.connect", params)
     dev_id = res["id"]
@@ -154,6 +153,34 @@ async def cmd_connect(c: LocalClient, args: argparse.Namespace) -> None:
         print(f"pairing requested - code {p['sas']}; check it matches the phone, then run: orbit pair --accept")
 
 
+def parse_address(text: str) -> dict[str, Any] | None:
+    """``host:port`` or ``[ipv6]:port`` -> connect params; None for anything without a colon (a device)."""
+    if m := re.fullmatch(r"\[([^\[\]]+)\]:(\d+)", text):
+        return {"host": m.group(1), "port": int(m.group(2))}
+    host, sep, port = text.rpartition(":")
+    if sep and host and ":" not in host and port.isdigit():
+        return {"host": host, "port": int(port)}
+    if ":" in text:
+        sys.exit(f"orbit: {text!r} is not host:port (write IPv6 addresses as [addr]:port)")
+    return None
+
+
+async def ask(prompt: str) -> str | None:
+    """input() that Ctrl-C can interrupt: a daemon thread does not keep the process alive. None on EOF."""
+    loop = asyncio.get_running_loop()
+    answer: asyncio.Future[str | None] = loop.create_future()
+
+    def read() -> None:
+        try:
+            line: str | None = input(prompt)
+        except EOFError:
+            line = None
+        loop.call_soon_threadsafe(lambda: answer.done() or answer.set_result(line))
+
+    threading.Thread(target=read, daemon=True).start()
+    return await answer
+
+
 def pairing_line(p: dict[str, Any]) -> str:
     state = []
     if p["localAccepted"]:
@@ -164,16 +191,17 @@ def pairing_line(p: dict[str, Any]) -> str:
 
 
 async def cmd_pair(c: LocalClient, args: argparse.Namespace) -> None:
+    dev_id = await resolve_device(c, args.device) if args.device else None
+
+    def relevant(pairings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [p for p in pairings if dev_id is None or p["deviceId"] == dev_id]
+
     await c.call("subscribe")
-    pairings = await c.call("pairing.list")
+    pairings = relevant(await c.call("pairing.list"))
     if not pairings and args.wait:
-        try:
-            pairings = (await wait_for(c, "pairing.changed", lambda d: d["pairings"], args.wait))["pairings"]
-        except TimeoutError:
-            pass
-    if args.device:
-        dev_id = await resolve_device(c, args.device)
-        pairings = [p for p in pairings if p["deviceId"] == dev_id]
+        with contextlib.suppress(TimeoutError):
+            data = await wait_for(c, "pairing.changed", lambda d: relevant(d["pairings"]), args.wait)
+            pairings = relevant(data["pairings"])
     if not pairings:
         print("no pending pairings")
         if args.accept or args.reject:
@@ -183,11 +211,16 @@ async def cmd_pair(c: LocalClient, args: argparse.Namespace) -> None:
     for p in pairings:
         print(pairing_line(p))
         if p["localAccepted"]:
+            if args.accept:  # accepted by an earlier run that gave up waiting: wait for the phone again
+                decided.append((p, True))
             continue
         if args.accept or args.reject:
             accept = bool(args.accept)
         elif sys.stdin.isatty():
-            answer = await asyncio.to_thread(input, f"Does the phone show {p['sas']}? Pair with {p['name']}? [y/N] ")
+            answer = await ask(f"Does the phone show {p['sas']}? Pair with {p['name']}? [y/N] ")
+            if answer is None:
+                print()
+                break
             accept = answer.strip().lower() in ("y", "yes")
         else:
             continue
@@ -210,17 +243,20 @@ async def cmd_pair(c: LocalClient, args: argparse.Namespace) -> None:
 
 
 async def pairing_outcome(c: LocalClient, p: dict[str, Any]) -> bool:
-    """Once the pairing session is no longer pending: did it end with the device paired and connected?"""
-    device = None
-    pending = any(x["session"] == p["session"] for x in await c.call("pairing.list"))
-    async for event, data in c.events():
-        if event == "pairing.changed":
-            pending = any(x["session"] == p["session"] for x in data["pairings"])
-        elif event == "devices.changed":
-            device = next((d for d in data["devices"] if d["id"] == p["deviceId"]), None)
-        if not pending and device is not None:
-            return bool(device["paired"] and device["connected"])
-    return False
+    """Wait until the pairing session is no longer pending; True if the device ended up paired and connected."""
+
+    def pending(pairings: list[dict[str, Any]]) -> bool:
+        return any(x["session"] == p["session"] for x in pairings)
+
+    # Events can be stale (queued before the pairing existed), so each one only triggers a re-check.
+    while pending(await c.call("pairing.list")):
+        async for event, data in c.events():
+            if event == "pairing.changed" and not pending(data["pairings"]):
+                break
+        else:
+            return False
+    device = next((d for d in await c.call("devices.list") if d["id"] == p["deviceId"]), None)
+    return bool(device and device["paired"] and device["connected"])
 
 
 async def cmd_activities(c: LocalClient, args: argparse.Namespace) -> None:

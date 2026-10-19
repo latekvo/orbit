@@ -94,3 +94,11 @@ def icon(color: str, glyph: str, size: int = 64) -> bytes:
         return (*rgb, 255)
 
     return encode_png(size, size, pixel)
+
+
+def image_mime(data: bytes) -> str:
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "image/png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "image/jpeg"
+    raise ValueError("art must be a PNG or JPEG image")

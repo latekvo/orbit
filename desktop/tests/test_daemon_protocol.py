@@ -169,6 +169,7 @@ def test_to_local_shifts_only_timestamps():
         "media": {"positionMs": 7, "durationMs": 9},
         "chrono": {"baseMs": 1000, "valueMs": 50, "running": False},
         "updatedMs": 2000,
+        "device": "spoofed",
     }
     out = to_local(act, "dev", sender_now=5000, offset=-300)
     assert out["device"] == "dev"

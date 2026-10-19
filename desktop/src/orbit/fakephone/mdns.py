@@ -10,18 +10,24 @@ import zeroconf
 from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
 
 SERVICE_TYPE = "_orbit._tcp.local."
-WILDCARDS = ("", "0.0.0.0")
 
 
 def advertised_addresses(host: str) -> list[str]:
-    """IPv4 addresses to put in the A records for a server bound to ``host``."""
-    if host not in WILDCARDS:
+    """Addresses to put in the A/AAAA records for a server bound to ``host``."""
+    if host in ("", "0.0.0.0", "::"):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", DeprecationWarning)
+            if host == "::":  # asyncio binds "::" IPv6-only
+                addresses = [a[0][0] for a in zeroconf.get_all_addresses_v6()]
+            else:
+                addresses = zeroconf.get_all_addresses()
+        addresses = list(dict.fromkeys(addresses))
+        lan = [a for a in addresses if not ipaddress.ip_address(a).is_loopback]
+        return lan or addresses
+    try:
+        return [str(ipaddress.ip_address(host))]
+    except ValueError:
         return [socket.gethostbyname(host)]
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore", DeprecationWarning)
-        addresses = zeroconf.get_all_addresses()
-    lan = [a for a in addresses if not ipaddress.ip_address(a).is_loopback]
-    return lan or addresses
 
 
 class Advertiser:
@@ -35,7 +41,8 @@ class Advertiser:
             server=f"orbit-fakephone-{device_id[:12]}.local.",
             parsed_addresses=self.addresses,
         )
-        self._zc = AsyncZeroconf(ip_version=zeroconf.IPVersion.V4Only)
+        v6 = any(ipaddress.ip_address(a).version == 6 for a in self.addresses)
+        self._zc = AsyncZeroconf(ip_version=zeroconf.IPVersion.All if v6 else zeroconf.IPVersion.V4Only)
 
     @property
     def instance_name(self) -> str:

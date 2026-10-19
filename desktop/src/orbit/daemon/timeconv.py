@@ -21,7 +21,7 @@ def to_local(activity: dict[str, Any], device: str, sender_now: int, offset: int
     ``media.positionAtMs`` is the local time at which ``media.positionMs`` was valid, i.e. the
     message's ``now`` (spec 5: media positions are valid at the message's ``now``).
     """
-    out = {"device": device, **copy.deepcopy(activity)}
+    out = {**copy.deepcopy(activity), "device": device}
     if _num(out.get("updatedMs")):
         out["updatedMs"] = int(out["updatedMs"] + offset)
     chrono = out.get("chrono")

@@ -44,7 +44,7 @@ class Model:
     def __init__(self, phone: FakePhone) -> None:
         self.phone = phone
         self.updated_ms = now_ms()
-        self.visible = False
+        self.retired = False  # set by FakePhone.remove(): never published again
 
     def start(self) -> None:
         self.publish()
@@ -63,12 +63,12 @@ class Model:
         raise NotImplementedError
 
     def publish(self) -> None:
+        if self.retired:
+            return
         self.updated_ms = now_ms()
-        self.visible = True
         self.phone._publish(self)
 
     def hide(self) -> None:
-        self.visible = False
         self.phone._unpublish(self.id)
 
     def base(self, kind: str, title: str, actions: list[dict[str, Any]], **fields: Any) -> dict[str, Any]:

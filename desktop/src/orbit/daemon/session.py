@@ -43,6 +43,7 @@ class Session:
         self.pairing: Pairing | None = None
         self.offset = 0
         self.closed = asyncio.Event()
+        self.started = False
         self.close_reason = ""
         self._req = 0
         self._ping_req = 0
@@ -77,6 +78,7 @@ class Session:
         self._note_clock(msg)
 
     def start(self) -> None:
+        self.started = True
         self._tasks = [asyncio.create_task(self._read_loop()), asyncio.create_task(self._keepalive())]
 
     async def request_pairing(self) -> None:
@@ -91,11 +93,12 @@ class Session:
             raise ApiError("bad_request", "this pairing was already answered")
         self.pairing.local = accept
         self.daemon.changed("pairing")
+        if accept:
+            # Before the send yields: the phone may send its snapshot as soon as it has our decision.
+            self._maybe_pair_complete()
         await self.send({"t": "pair_decision", "accepted": accept})
         if not accept:
             await self.close("pairing rejected locally")
-        else:
-            await self._maybe_pair_complete()
 
     async def action(self, activity: str, action: str, value: Any, has_value: bool, timeout: float) -> dict[str, Any]:
         self._req += 1
@@ -110,7 +113,11 @@ class Session:
             result = await asyncio.wait_for(fut, timeout)
         except TimeoutError:
             raise ApiError("timeout", f"no action_result within {timeout:g} s") from None
-        except (ConnectionError, ProtocolError) as e:
+        except ProtocolError as e:
+            if e.code == "bad_frame":
+                raise ApiError("bad_request", "action message too large") from None
+            raise ApiError("not_connected", str(e)) from None
+        except ConnectionError as e:
             raise ApiError("not_connected", str(e)) from None
         finally:
             self._pending.pop(req, None)
@@ -123,7 +130,6 @@ class Session:
         if self.closed.is_set() or self.close_reason:
             return
         self.close_reason = reason
-        log.info("session %s with %s (%s) closing: %s", self.id, self.peer.name, self.peer.id, reason)
         if bye:
             with contextlib.suppress(Exception):
                 await asyncio.wait_for(self.send({"t": "bye", "reason": reason}), 2)
@@ -133,6 +139,7 @@ class Session:
         if self.closed.is_set():
             return
         self.close_reason = self.close_reason or "closed"
+        log.info("session %s with %s (%s) closed: %s", self.id, self.peer.name, self.peer.id, self.close_reason)
         with contextlib.suppress(Exception):
             self.channel.close()
         current = asyncio.current_task()
@@ -194,7 +201,7 @@ class Session:
         if not self.paired:
             await self.close("pairing timed out")
 
-    async def _maybe_pair_complete(self) -> None:
+    def _maybe_pair_complete(self) -> None:
         if self.pairing and self.pairing.local and self.pairing.remote:
             self.pairing = None
             self.local_paired = self.remote_paired = True
@@ -226,7 +233,7 @@ class Session:
                     return
                 self.pairing.remote = True
                 d.changed("pairing")
-                await self._maybe_pair_complete()
+                self._maybe_pair_complete()
             case "snapshot":
                 now = self._note_clock(msg)
                 acts = msg.get("activities")
