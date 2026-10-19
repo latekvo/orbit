@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 
 # A subscriber that stops reading is dropped rather than buffering events without bound.
 MAX_CLIENT_BUFFER = 32 * 1024 * 1024
+CALL_TIMEOUT = 30.0  # every method answers within this (spec/LOCAL_API.md)
 
 
 class AlreadyRunning(RuntimeError):
@@ -114,7 +115,11 @@ class ApiServer:
                 params = {}
             if not isinstance(method, str) or not isinstance(params, dict):
                 raise ApiError("bad_request", "'method' must be a string and 'params' an object")
-            result = await self._call(client, method, params)
+            try:
+                async with asyncio.timeout(CALL_TIMEOUT):
+                    result = await self._call(client, method, params)
+            except TimeoutError:
+                raise ApiError("timeout", f"orbitd gave up after {CALL_TIMEOUT:g} s") from None
             client.send({"id": req_id, "result": result})
             if method == "subscribe":
                 for kind in ("devices", "pairing", "activities"):

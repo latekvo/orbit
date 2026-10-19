@@ -12,6 +12,7 @@ from daemon_helpers import RawPhone, pin_in, until
 from orbit.client import ApiError
 from orbit.daemon import ble, core
 from orbit.daemon.ble import RX_UUID, TX_UUID, BleLink, chunk_size
+from orbit.daemon.session import SENT_THEN_LOST
 from orbit.daemon.timeconv import now_ms
 from orbit.proto import FrameStream, KeyPair, device_id, respond
 
@@ -47,6 +48,11 @@ class FakeGattLink:
         self.log = []
         self.write_error = None  # raised by the next write_gatt_char, before it reaches the phone
         self.lose_write_response = False  # the next write reaches the phone, then the link drops
+        self.acks = True  # False: writes are never acknowledged (a stalled link)
+        self.notify_budget = None  # notifications still delivered before the link stalls
+        self.notify_delay = 0.0  # seconds between notifications
+        self.write_delay = 0.0  # seconds each acknowledged write takes
+        self._outbox = asyncio.Queue()
         self.connected = False
         self._disconnected = disconnected_callback
         self._notify = None
@@ -68,7 +74,7 @@ class FakeGattLink:
         class NotifyWriter:
             def write(self, data):
                 for i in range(0, len(data), 20):
-                    asyncio.get_running_loop().call_soon(link._notify, None, bytearray(data[i : i + 20]))
+                    link._outbox.put_nowait(bytearray(data[i : i + 20]))
 
             async def drain(self):
                 await asyncio.sleep(0)
@@ -81,7 +87,19 @@ class FakeGattLink:
             ch = await respond(FrameStream(self._phone_rx, NotifyWriter()), identity, "BLE Phone", "android")
             await (self.script or phone_session)(ch, self)
 
+        async def notify():
+            while True:
+                chunk = await self._outbox.get()
+                if self.notify_delay:
+                    await asyncio.sleep(self.notify_delay)
+                if self.notify_budget is not None:
+                    if self.notify_budget <= 0:
+                        continue
+                    self.notify_budget -= 1
+                self._notify(None, chunk)
+
         self._task = asyncio.ensure_future(run_phone())
+        self._pump = asyncio.ensure_future(notify())
 
     async def start_notify(self, uuid, callback):
         self.log.append(("notify", uuid))
@@ -90,6 +108,11 @@ class FakeGattLink:
     async def write_gatt_char(self, uuid, data, response=None):
         if self.write_error:
             raise self.write_error
+        if not self.acks:
+            self.log.append(("write unacknowledged", len(data)))
+            await asyncio.Event().wait()
+        if self.write_delay:
+            await asyncio.sleep(self.write_delay)
         self.log.append(("write", uuid, len(data), response))
         self._phone_rx.feed_data(bytes(data))
         if self.lose_write_response:
@@ -107,6 +130,7 @@ class FakeGattLink:
         self.connected = False
         if hasattr(self, "_task"):
             self._task.cancel()
+            self._pump.cancel()
         if self._disconnected:
             callback, self._disconnected = self._disconnected, None
             callback(self)
@@ -429,7 +453,7 @@ async def test_action_sent_before_the_link_dropped_is_not_retried(ble_phone, los
         link_to("A1").drop()
     with pytest.raises(ApiError) as e:
         await asyncio.wait_for(action, 2)
-    assert e.value.code == "not_connected" and "may have been applied" in e.value.message
+    assert e.value.code == "failed" and "may have been applied" in e.value.message
     await until(lambda: connected_via(daemon, dev_id, "A1"))
     await asyncio.sleep(0.1)
     assert [i.actions for i in FakeGattLink.instances] == [["media.play"], []]
@@ -453,7 +477,7 @@ async def test_action_gives_up_with_reconnecting_and_activities_expire(ble_phone
     assert (await api.call("devices.list"))[0]["state"] == "offline"
     with pytest.raises(ApiError) as e:  # offline: no waiting
         await asyncio.wait_for(api.call("activities.action", params), 0.1)
-    assert e.value.code == "not_connected" and e.value.message != "reconnecting"
+    assert (e.value.code, e.value.message) == ("not_connected", "phone offline")
 
 
 async def test_real_log_scenario_invalidated_services_rotated_address(ble_phone, caplog):
@@ -521,3 +545,171 @@ async def test_corebluetooth_did_modify_services_reaches_the_link():
         await until(lambda: calls)
     finally:
         del ble._invalidation_listeners["PERIPHERAL-1"]
+
+
+# ---- stalled links and bounded API answers (orbitd.log 22:07:50-22:08:22) -------------------------
+
+
+@pytest.fixture
+async def unretrieved():
+    """Collects "exception was never retrieved" reports for futures and tasks."""
+    import gc
+
+    loop = asyncio.get_running_loop()
+    seen = []
+    previous = loop.get_exception_handler()
+    loop.set_exception_handler(lambda _loop, ctx: seen.append(ctx.get("message")))
+
+    def check():
+        gc.collect()
+        return [m for m in seen if "never retrieved" in (m or "")]
+
+    yield check
+    loop.set_exception_handler(previous)
+
+
+async def test_stalled_link_is_torn_down_and_clicks_answered_within_the_bound(ble_phone, unretrieved):
+    """The real log: after a notification burst the link stalled both ways; a write was never
+    acknowledged and bleak waited ~30 s for the ATT timeout while clicks hung."""
+    daemon, api, dev_id = await ble_phone(send_timeout=0.5, action_deadline=3.0)
+    daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
+    await until(lambda: connected_via(daemon, dev_id, "A1"))
+    stalled = link_to("A1")
+    stalled.acks, stalled.notify_budget = False, 0
+    session = daemon.devices[dev_id].session
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+
+    def click(action):
+        params = {"device": dev_id, "activity": "media:x", "action": action}
+        return asyncio.ensure_future(api.call("activities.action", params))
+
+    first = click("media.pause")
+    await until(lambda: any(e[0] == "write unacknowledged" for e in stalled.log if isinstance(e, tuple)))
+    second = click("media.next")  # queued behind the stalled write: never left this computer
+    await asyncio.wait_for(session.closed.wait(), 1.0)
+    assert "link stalled" in session.close_reason and loop.time() - t0 < 1.0
+    assert "disconnect" in stalled.log
+
+    with pytest.raises(ApiError) as e:
+        await first
+    assert (e.value.code, e.value.message) == ("failed", SENT_THEN_LOST)
+    assert await second == {"ok": True}
+    assert loop.time() - t0 < 3.0
+    fresh = FakeGattLink.instances[-1]
+    assert fresh is not stalled and fresh.actions == ["media.next"] and stalled.actions == []
+    assert connected_via(daemon, dev_id, "A1")
+    assert unretrieved() == []
+
+
+async def test_frame_stalled_mid_way_kills_the_link(ble_phone):
+    daemon, api, dev_id = await ble_phone(stall_after=0.3, dead_after=10.0, keepalive=10.0)
+    daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
+    await until(lambda: connected_via(daemon, dev_id, "A1"))
+    session = daemon.devices[dev_id].session
+    link_to("A1").notify_budget = 1  # the action_result frame stops after its first 20 bytes
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with pytest.raises(ApiError) as e:
+        await api.call("activities.action", {"device": dev_id, "activity": "media:x", "action": "media.play"})
+    assert e.value.code == "failed"
+    assert "mid-frame" in session.close_reason and 0.25 < loop.time() - t0 < 1.0
+
+
+async def test_slowly_arriving_frame_is_not_mistaken_for_a_dead_link(ble_phone, monkeypatch):
+    # Each notification resets the receive timer, not each completed message.
+    monkeypatch.setattr(FakeGattLink, "mtu", 23)
+    daemon, api, dev_id = await ble_phone(dead_after=0.4, stall_after=0.3, keepalive=10.0)
+    orig_connect = FakeGattLink.connect
+
+    async def slow_connect(self):
+        await orig_connect(self)
+        self.notify_delay = 0.02
+
+    monkeypatch.setattr(FakeGattLink, "connect", slow_connect)
+    big = [{"id": "media:x", "kind": "media", "title": "x" * 1500, "actions": []}]
+    monkeypatch.setattr(sys.modules[__name__], "SNAPSHOT", big)
+    daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
+    # ~80 notifications at 20 ms: the snapshot takes ~1.6 s, four times dead_after.
+    await until(lambda: daemon.devices[dev_id].activities, timeout=5)
+    assert len(FakeGattLink.instances) == 1 and daemon.devices[dev_id].session is not None
+
+
+async def test_every_api_call_has_an_upper_bound(make_daemon, api_for, monkeypatch):
+    from orbit.daemon import api as api_module
+
+    monkeypatch.setattr(api_module, "CALL_TIMEOUT", 0.2)
+    daemon = await make_daemon()
+    client = await api_for(daemon)
+
+    async def hang(_params):
+        await asyncio.Event().wait()
+
+    monkeypatch.setattr(daemon, "api_connect", hang)
+    with pytest.raises(ApiError) as e:
+        await asyncio.wait_for(client.call("devices.connect", {"id": "x"}), 1)
+    assert (e.value.code, e.value.message) == ("timeout", "orbitd gave up after 0.2 s")
+
+
+async def test_action_without_a_result_times_out_within_the_bound(ble_phone):
+    daemon, api, dev_id = await ble_phone(action_deadline=0.5)
+    daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
+    await until(lambda: connected_via(daemon, dev_id, "A1"))
+    FakeGattLink.hold_results = True
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with pytest.raises(ApiError) as e:
+        await api.call("activities.action", {"device": dev_id, "activity": "media:x", "action": "media.play"})
+    assert (e.value.code, e.value.message) == ("timeout", "phone did not respond")
+    assert 0.45 < loop.time() - t0 < 0.8
+
+
+async def test_giving_up_on_an_action_never_cuts_its_frame_in_half(ble_phone):
+    daemon, api, dev_id = await ble_phone(action_deadline=0.15)
+    daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
+    await until(lambda: connected_via(daemon, dev_id, "A1"))
+    session, link = daemon.devices[dev_id].session, link_to("A1")
+    link.write_delay = 0.05  # the action frame needs ~5 writes: the deadline passes mid-frame
+    params = {"device": dev_id, "activity": "media:x", "action": "media.play"}
+    with pytest.raises(ApiError) as e:
+        await api.call("activities.action", params)
+    assert e.value.code == "timeout"
+    link.write_delay = 0.0
+    await until(lambda: link.actions == ["media.play"])  # the frame was completed and understood
+    daemon.action_deadline = 3.0
+    assert await api.call("activities.action", params) == {"ok": True}
+    assert daemon.devices[dev_id].session is session
+
+
+async def test_action_queued_behind_a_send_on_a_closing_tcp_session_moves_on(
+    make_daemon, api_for, short_tmp, monkeypatch
+):
+    got = []
+
+    async def phone(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+        await ch.recv()
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": SNAPSHOT})
+        while True:
+            msg = await ch.recv()
+            if msg["t"] == "action":
+                got.append(msg["action"])
+                await ch.send({"t": "action_result", "req": msg["req"], "ok": True})
+            elif msg["t"] == "ping":
+                await ch.send({"t": "pong", "req": msg["req"]})
+
+    monkeypatch.setattr(core, "STABLE_SESSION", 0.0)
+    async with RawPhone(phone) as raw:
+        pin_in(short_tmp / "daemon", raw.identity, address=f"127.0.0.1:{raw.port}")
+        daemon = await make_daemon()
+        api = await api_for(daemon)
+        await until(lambda: daemon.devices[raw.id].activities and not daemon.devices[raw.id].stale)
+        first = daemon.devices[raw.id].session
+        await first._send_lock.acquire()  # a send in progress
+        params = {"device": raw.id, "activity": "media:x", "action": "media.next"}
+        action = asyncio.ensure_future(api.call("activities.action", params))
+        await asyncio.sleep(0.1)
+        await first.close("test: link lost while the action waited")
+        first._send_lock.release()
+        assert await asyncio.wait_for(action, 3) == {"ok": True}
+        assert got == ["media.next"] and daemon.devices[raw.id].session is not first

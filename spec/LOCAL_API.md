@@ -35,18 +35,23 @@ Newline-delimited JSON, one object per line, UTF-8.
 | `pairing.list` | - | `[Pairing]` |
 | `pairing.respond` | `{"session", "accept": bool}` | `true` |
 | `activities.list` | - | `[DeviceActivity]` |
-| `activities.action` | `{"device", "activity", "action", "value"?}` | `{"ok": bool, "error"?: string}` (waits up to 10 s for `action_result`; see below while `"reconnecting"`) |
+| `activities.action` | `{"device", "activity", "action", "value"?}` | `{"ok": bool, "error"?: string}`; answers within 12 s (below) |
 | `art.get` | `{"device", "key"}` | `{"mime", "data"}` (b64) |
 
 Error codes: `bad_request`, `not_found`, `not_connected`, `not_paired`, `timeout`,
 `failed`.
 
-`activities.action` on a `"reconnecting"` device waits up to 5 s for the session to come back
-and then sends the action. An action is re-sent on the new session only if it never left this
-computer, so a toggle is never applied twice. `not_connected` messages:
-- `"reconnecting"`: still not back after 5 s;
-- `"connection lost after the action was sent; it may have been applied"`: not retried;
-- anything else: the device is `"offline"`.
+Every call answers within 30 s (else `timeout`, "orbitd gave up after 30 s"); a client
+timeout should be longer than that, or than the method's own bound.
+
+`activities.action` answers within 12 s. On a `"reconnecting"` device it first waits up to
+5 s for the session to come back. An action is re-sent on a new session only if it never left
+this computer, so a toggle is never applied twice. Errors:
+- `not_connected` `"reconnecting"`: the session was not back within 5 s; not sent;
+- `not_connected` `"phone offline"`: the device is `"offline"`; not sent;
+- `failed` `"connection lost after the action was sent; it may have been applied"`;
+- `timeout` `"phone did not respond"`: no `action_result` within the bound; it may have been
+  applied.
 
 ## Types
 

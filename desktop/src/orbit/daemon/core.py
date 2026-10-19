@@ -22,7 +22,7 @@ from ..client import ApiError
 from ..paths import ensure_private_dir
 from ..proto import FrameStream, device_id, initiate
 from ..store import PeerStore, PinnedPeer, load_or_create_identity
-from .session import ActionNotSent, Session
+from .session import NO_RESPONSE, ActionNotSent, Session, WatchedReader
 from .timeconv import to_local
 
 log = logging.getLogger(__name__)
@@ -118,8 +118,10 @@ class Daemon:
         *,
         mdns: bool = True,
         ble: bool = True,
-        keepalive: float = 20.0,
-        dead_after: float = 60.0,
+        keepalive: float = 10.0,
+        dead_after: float = 30.0,
+        stall_after: float = 10.0,
+        send_timeout: float = 5.0,
         pairing_timeout: float = 120.0,
         action_timeout: float = 10.0,
         connect_timeout: float = 10.0,
@@ -127,6 +129,7 @@ class Daemon:
         ble_link_timeout: float = 4.0,
         stale_grace: float = 15.0,
         action_wait: float = 5.0,
+        action_deadline: float = 12.0,
     ) -> None:
         from .api import ApiServer
 
@@ -138,6 +141,8 @@ class Daemon:
         self.store = PeerStore(config_dir)
         self.keepalive = keepalive
         self.dead_after = dead_after
+        self.stall_after = stall_after
+        self.send_timeout = send_timeout
         self.pairing_timeout = pairing_timeout
         self.action_timeout = action_timeout
         self.connect_timeout = connect_timeout
@@ -145,6 +150,7 @@ class Daemon:
         self.ble_link_timeout = ble_link_timeout
         self.stale_grace = stale_grace
         self.action_wait = action_wait
+        self.action_deadline = action_deadline
         self.devices: dict[str, Device] = {}
         self.sessions: dict[str, Session] = {}
         self.api = ApiServer(self, socket_path)
@@ -506,6 +512,7 @@ class Daemon:
             raise ApiError("timeout", f"connecting to {route.address} timed out") from None
         except Exception as e:  # OSError for TCP; bleak raises its own exception types
             raise ApiError("failed", f"cannot connect to {route.address}: {e}") from None
+        stream = FrameStream(WatchedReader(stream.reader), stream.writer)
         session = None
         try:
             channel = await asyncio.wait_for(
@@ -770,13 +777,20 @@ class Daemon:
         dev = self.devices.get(dev_id)
         if dev is None:
             raise ApiError("not_found", f"unknown device {dev_id}")
+        try:
+            async with asyncio.timeout(self.action_deadline):
+                return await self._action(dev, activity, action, value, "value" in params)
+        except TimeoutError:
+            raise ApiError("timeout", NO_RESPONSE) from None
+
+    async def _action(self, dev: Device, activity: str, action: str, value: Any, has_value: bool) -> dict[str, Any]:
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.action_wait
         while True:
             session = dev.session
             if session is None:
                 if dev.grace is None:
-                    raise ApiError("not_connected", f"{dev_id} is not connected")
+                    raise ApiError("not_connected", "phone offline")
                 # Reconnecting: hold the action until the session is back, up to action_wait.
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(dev.transition.wait(), deadline - loop.time())
@@ -784,13 +798,13 @@ class Daemon:
                     raise ApiError("not_connected", "reconnecting")
                 continue
             if not session.paired:
-                raise ApiError("not_paired", f"{dev_id} is not paired")
+                raise ApiError("not_paired", f"{dev.id} is not paired")
             if activity not in dev.activities:
                 raise ApiError("not_found", f"unknown activity {activity}")
             try:
-                return await session.action(activity, action, value, "value" in params, self.action_timeout)
+                return await session.action(activity, action, value, has_value, self.action_timeout)
             except ActionNotSent as e:
-                log.info("action %s on %s not sent (%s); waiting for the next session", action, dev_id, e)
+                log.info("action %s on %s not sent (%s); waiting for the next session", action, dev.id, e)
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(session.closed.wait(), max(0.0, deadline - loop.time()))
 
