@@ -167,7 +167,7 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
             n.category == Notification.CATEGORY_CALL -> "call"
             n.category == Notification.CATEGORY_NAVIGATION -> "navigation"
             n.category == Notification.CATEGORY_PROGRESS || hasProgress(e) -> "progress"
-            n.category == Notification.CATEGORY_STOPWATCH || n.category == Notification.CATEGORY_ALARM || chrono -> "timer"
+            n.category == CATEGORY_STOPWATCH || n.category == Notification.CATEGORY_ALARM || chrono -> "timer"
             else -> "generic"
         }
         val title = (e.getCharSequence(Notification.EXTRA_TITLE) ?: e.getCharSequence(Notification.EXTRA_TITLE_BIG))?.toString()
@@ -408,10 +408,12 @@ class OrbitListenerService : NotificationListenerService(), ActionExecutor {
     companion object {
         /** Notification.FLAG_PROMOTED_ONGOING (API 36). */
         private const val FLAG_PROMOTED_ONGOING = 0x00040000
+        /** Notification.CATEGORY_STOPWATCH, added in API 31. */
+        private const val CATEGORY_STOPWATCH = "stopwatch"
         private val EXCLUDED_PACKAGES = setOf("android", "com.android.systemui")
         private val LIVE_CATEGORIES = setOf(
             Notification.CATEGORY_TRANSPORT, Notification.CATEGORY_PROGRESS, Notification.CATEGORY_NAVIGATION,
-            Notification.CATEGORY_CALL, Notification.CATEGORY_STOPWATCH, Notification.CATEGORY_ALARM,
+            Notification.CATEGORY_CALL, CATEGORY_STOPWATCH, Notification.CATEGORY_ALARM,
         )
         private val ICONS = listOf(
             "pause" to "pause", "play" to "play", "resume" to "play", "next" to "next", "skip" to "next",

@@ -11,6 +11,7 @@ import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.os.IBinder
 import android.util.Log
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.update
 
 /** Foreground service hosting the TCP server, DNS-SD registration and the BLE peripheral. */
@@ -42,7 +43,10 @@ class OrbitService : Service() {
         nsd = NsdAdvertiser(this) { s -> orbit.transports.update { it.copy(nsd = s) } }.also {
             it.start(orbit.deviceName, port, orbit.deviceId)
         }
-        registerReceiver(btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED))
+        // A protected system broadcast still reaches a not-exported receiver.
+        ContextCompat.registerReceiver(
+            this, btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
+        )
         startBle()
         Log.i(TAG, "service started: tcp port $port, deviceId ${orbit.deviceId}")
     }
