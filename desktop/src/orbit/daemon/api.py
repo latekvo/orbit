@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import socket
+import stat
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -55,11 +56,20 @@ class ApiServer:
         self._tasks: set[asyncio.Task] = set()
 
     async def start(self) -> None:
-        ensure_private_dir(self.path.parent)
-        if self.path.exists():
-            if _socket_alive(self.path):
-                raise AlreadyRunning(f"another orbitd is already listening on {self.path}")
-            self.path.unlink()
+        try:
+            ensure_private_dir(self.path.parent)
+            try:
+                mode = self.path.lstat().st_mode
+            except FileNotFoundError:
+                mode = None
+            if mode is not None:
+                if not stat.S_ISSOCK(mode):
+                    raise StartupError(f"{self.path} exists and is not a socket; not replacing it")
+                if _socket_alive(self.path):
+                    raise AlreadyRunning(f"another orbitd is already listening on {self.path}")
+                self.path.unlink()
+        except OSError as e:
+            raise StartupError(f"cannot prepare {self.path}: {e.strerror or e}") from e
         old = os.umask(0o177)
         try:
             self._server = await asyncio.start_unix_server(self._handle, str(self.path), limit=LINE_LIMIT)

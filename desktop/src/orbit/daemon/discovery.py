@@ -89,18 +89,19 @@ class BleDiscovery:
         self._on_seen = on_seen
         self._scanner = None
 
-    async def start(self) -> bool:
+    async def start(self) -> str | None:
+        """Start scanning; returns why it could not (no adapter, Bluetooth off, no permission...)."""
         try:
             from bleak import BleakScanner
 
             self._scanner = BleakScanner(detection_callback=self._detected, service_uuids=[SERVICE_UUID])
             await self._scanner.start()
-        except Exception as e:  # no adapter, no permission, no BlueZ...
-            log.warning("BLE discovery unavailable: %s", e)
+        except Exception as e:
+            log.warning("BLE discovery unavailable (will retry): %s", e)
             self._scanner = None
-            return False
+            return str(e) or type(e).__name__
         log.info("scanning for Orbit devices via BLE")
-        return True
+        return None
 
     async def stop(self) -> None:
         if self._scanner:

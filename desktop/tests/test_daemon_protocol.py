@@ -285,3 +285,23 @@ def test_orbitd_reports_startup_error_cleanly(short_tmp, capsys):
         )
     assert e.value.code == 1
     assert capsys.readouterr().err.startswith("orbitd: cannot listen on")
+
+
+async def test_socket_path_that_is_not_a_socket_is_left_alone(short_tmp):
+    from orbit.daemon.api import StartupError
+    from orbit.daemon.core import Daemon
+
+    notes = short_tmp / "notes.txt"
+    notes.write_text("precious")
+    with pytest.raises(StartupError, match="is not a socket"):
+        await Daemon(short_tmp / "cfg", "D", notes, mdns=False, ble=False).start()
+    assert notes.read_text() == "precious"
+
+
+async def test_unpreparable_socket_directory_is_a_startup_error(short_tmp):
+    from orbit.daemon.api import StartupError
+    from orbit.daemon.core import Daemon
+
+    (short_tmp / "file").write_text("")
+    with pytest.raises(StartupError, match="cannot prepare"):
+        await Daemon(short_tmp / "cfg", "D", short_tmp / "file" / "d.sock", mdns=False, ble=False).start()

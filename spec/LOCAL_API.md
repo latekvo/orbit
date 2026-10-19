@@ -26,10 +26,10 @@ Newline-delimited JSON, one object per line, UTF-8.
 
 | method | params | result |
 |---|---|---|
-| `status` | - | `{"version": "...", "name": "<this computer>", "deviceId": "..."}` |
+| `status` | - | `{"version": "...", "name": "<this computer>", "deviceId": "...", "ble": "off" \| "starting" \| "scanning" \| "unavailable", "bleError": string \| null}` - `"unavailable"` (Bluetooth off, no adapter or no permission; `bleError` says why) is retried with backoff up to every 30 s |
 | `subscribe` | - | `true`; the connection then also receives events (below), starting with one of each |
 | `devices.list` | - | `[Device]` |
-| `devices.connect` | `{"id"}` or `{"host", "port"}` | `{"id": "<deviceId>"}` once the handshake completes (pairing may follow); always the real 32-hex id, also when `id` was provisional |
+| `devices.connect` | `{"id"}` or `{"host", "port"}` | `{"id": "<deviceId>"}` once the handshake completes (pairing may follow); always the real 32-hex id, also when `id` was provisional. Answers within 12 s (else `timeout`, listing the addresses that failed) |
 | `devices.disconnect` | `{"id"}` | `true`; also stops a `"reconnecting"` device from reconnecting |
 | `devices.forget` | `{"id"}` | `true` - unpairs (sends `unpair` if connected) and removes all stored data |
 | `pairing.list` | - | `[Pairing]` |

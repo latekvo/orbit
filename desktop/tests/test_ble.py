@@ -83,7 +83,7 @@ class FakeGattLink:
                 pass
 
         async def run_phone():
-            identity = self.identities.get(self.address, self.phone_identity)
+            identity = self.identities.get(self.address) or self.phone_identity
             ch = await respond(FrameStream(self._phone_rx, NotifyWriter()), identity, "BLE Phone", "android")
             await (self.script or phone_session)(ch, self)
 
@@ -220,6 +220,7 @@ async def pairing_phone(ch, _link=None):
 def gatt(monkeypatch):
     monkeypatch.setattr(bleak, "BleakClient", FakeGattLink)
     FakeGattLink.identities, FakeGattLink.script, FakeGattLink.instances = {}, staticmethod(pairing_phone), []
+    FakeGattLink.gone = set()
     return FakeGattLink
 
 
@@ -713,3 +714,115 @@ async def test_action_queued_behind_a_send_on_a_closing_tcp_session_moves_on(
         first._send_lock.release()
         assert await asyncio.wait_for(action, 3) == {"ok": True}
         assert got == ["media.next"] and daemon.devices[raw.id].session is not first
+
+
+# ---- BLE discovery lifecycle, pairing vs mDNS, connect deadline --------------------------------
+
+
+class FakeScanner:
+    """Stands in for ``bleak.BleakScanner``; ``mode`` is "off" (raise), "block" (hang) or "on"."""
+
+    mode = "off"
+    starts = 0
+
+    def __init__(self, detection_callback=None, service_uuids=None):
+        pass
+
+    async def start(self):
+        FakeScanner.starts += 1
+        if self.mode == "block":  # a macOS Bluetooth permission prompt nobody answered yet
+            await asyncio.Event().wait()
+        if self.mode == "off":
+            raise bleak.exc.BleakError("Bluetooth device is turned off")
+
+    async def stop(self):
+        pass
+
+
+@pytest.fixture
+def scanner(monkeypatch):
+    monkeypatch.setattr(bleak, "BleakScanner", FakeScanner)
+    monkeypatch.setattr(core, "BLE_RETRY_MIN", 0.05)
+    FakeScanner.mode, FakeScanner.starts = "off", 0
+    return FakeScanner
+
+
+async def test_ble_discovery_is_retried_until_bluetooth_comes_on(make_daemon, api_for, scanner):
+    daemon = await asyncio.wait_for(make_daemon(ble=True), 2)  # discovery starts in the background
+    api = await api_for(daemon)
+    status = await until(lambda: _ble_status(api, "unavailable"))
+    assert "turned off" in status["bleError"]
+    scanner.mode = "on"
+    status = await until(lambda: _ble_status(api, "scanning"))
+    assert status["bleError"] is None and scanner.starts >= 2
+
+
+async def _ble_status(api, state):
+    status = await api.call("status")
+    return status if status["ble"] == state else None
+
+
+async def test_blocked_ble_start_does_not_hold_up_startup_or_lan(make_daemon, api_for, scanner, short_tmp):
+    from daemon_helpers import RawPhone
+
+    scanner.mode = "block"
+
+    async def phone(ch):
+        await phone_session(ch)
+
+    async with RawPhone(phone) as raw:
+        pin_in(short_tmp / "daemon", raw.identity, address=f"127.0.0.1:{raw.port}")
+        daemon = await asyncio.wait_for(make_daemon(ble=True), 2)
+        api = await api_for(daemon)
+        assert (await api.call("status"))["ble"] == "starting"
+        await until(lambda: daemon.devices[raw.id].session)  # LAN connects meanwhile
+        await asyncio.wait_for(daemon.stop(), 2)
+
+
+async def undecided_phone(ch, _link=None):
+    """Unpaired phone showing the SAS; the user has not tapped anything yet."""
+    await ch.send({"t": "ready", "paired": False, "now": now_ms()})
+    await ch.recv()
+    while True:
+        msg = await ch.recv()
+        if msg["t"] == "ping":
+            await ch.send({"t": "pong", "req": msg["req"]})
+
+
+async def test_pending_ble_pairing_survives_mdns_discovery(make_daemon, api_for, gatt, caplog):
+    from daemon_helpers import RawPhone
+
+    phone = KeyPair.generate()
+    pid = device_id(phone.public)
+    gatt.identities, gatt.script = {"AA": phone}, staticmethod(undecided_phone)
+    daemon = await make_daemon()
+    api = await api_for(daemon)
+    daemon.on_ble(pid[:16], SimpleNamespace(address="AA"), None)
+    assert await api.call("devices.connect", {"id": pid[:16]}) == {"id": pid}
+    (pairing,) = await api.call("pairing.list")
+    async with RawPhone(undecided_phone, identity=phone) as lan:
+        daemon.on_lan(
+            "P._orbit._tcp.local.",
+            {"id": pid, "name": "P", "platform": "android", "addresses": [("127.0.0.1", lan.port)]},
+        )
+        await asyncio.sleep(0.5)
+        assert not lan._writers  # no upgrade attempted while pairing
+        assert [p["session"] for p in await api.call("pairing.list")] == [pairing["session"]]
+        # Connecting to it explicitly does not replace the pending BLE pairing either.
+        assert await api.call("devices.connect", {"host": "127.0.0.1", "port": lan.port}) == {"id": pid}
+        assert [p["session"] for p in await api.call("pairing.list")] == [pairing["session"]]
+        assert daemon.devices[pid].session.transport == "ble"
+    assert "no longer trusts" not in caplog.text
+
+
+async def test_devices_connect_answers_within_its_deadline(ble_phone):
+    daemon, api, dev_id = await ble_phone(ble_link_timeout=30.0, connect_deadline=0.3)
+    daemon.devices[dev_id].auto = False  # only the explicit connect below
+    FakeGattLink.gone = {"AA"}
+    daemon.on_ble(dev_id[:16], SimpleNamespace(address="AA"))
+    loop = asyncio.get_running_loop()
+    t0 = loop.time()
+    with pytest.raises(ApiError) as e:
+        await api.call("devices.connect", {"id": dev_id})
+    assert e.value.code == "timeout" and e.value.message.startswith("no connection within 0.3 s")
+    assert loop.time() - t0 < 0.6

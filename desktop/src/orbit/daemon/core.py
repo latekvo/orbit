@@ -33,6 +33,7 @@ BLE_STALE_AFTER = 30.0
 RECONNECT_MAX_DELAY = 60.0
 STABLE_SESSION = 30.0
 CONNECTOR_RESTART_DELAY = 5.0
+BLE_RETRY_MIN, BLE_RETRY_MAX = 2.0, 30.0
 
 
 @dataclass(frozen=True)
@@ -130,6 +131,7 @@ class Daemon:
         stale_grace: float = 15.0,
         action_wait: float = 5.0,
         action_deadline: float = 12.0,
+        connect_deadline: float = 12.0,
     ) -> None:
         from .api import ApiServer
 
@@ -151,6 +153,7 @@ class Daemon:
         self.stale_grace = stale_grace
         self.action_wait = action_wait
         self.action_deadline = action_deadline
+        self.connect_deadline = connect_deadline
         self.devices: dict[str, Device] = {}
         self.sessions: dict[str, Session] = {}
         self.api = ApiServer(self, socket_path)
@@ -158,6 +161,8 @@ class Daemon:
         self._use_ble = ble
         self._lan = None
         self._ble = None
+        self.ble_state = "off"
+        self.ble_error: str | None = None
         self._stopping = False
         self._dirty: set[str] = set()
         self._flush_scheduled = False
@@ -175,16 +180,28 @@ class Daemon:
 
             self._lan = LanDiscovery(self.on_lan)
             await self._lan.start()
-        if self._use_ble:
-            from .discovery import BleDiscovery
-
-            self._ble = BleDiscovery(self.on_ble)
-            if not await self._ble.start():
-                self._ble = None
-            else:
-                self._spawn(self._ble_expiry())
         for dev in self.devices.values():
             self._ensure_connector(dev)
+        if self._use_ble:
+            # In the background: starting can block on a macOS permission prompt, or fail until
+            # Bluetooth is switched on.
+            self.ble_state = "starting"
+            self._spawn(self._start_ble())
+            self._spawn(self._ble_expiry())
+
+    async def _start_ble(self) -> None:
+        from .discovery import BleDiscovery
+
+        delay = BLE_RETRY_MIN
+        while True:
+            scanner = BleDiscovery(self.on_ble)
+            error = await scanner.start()
+            if error is None:
+                self._ble, self.ble_state, self.ble_error = scanner, "scanning", None
+                return
+            self.ble_state, self.ble_error = "unavailable", error
+            await asyncio.sleep(delay)
+            delay = min(delay * 2, BLE_RETRY_MAX)
 
     async def stop(self) -> None:
         self._stopping = True
@@ -349,7 +366,7 @@ class Daemon:
         log.info("discovered %s (%s) via mDNS at %s", info["name"], dev.id, info["addresses"])
         self.changed("devices")
         dev.wake.set()
-        if dev.session and dev.session.transport == "ble" and dev.auto:
+        if dev.session and dev.session.transport == "ble" and dev.session.paired and dev.auto:
             self._spawn(self._upgrade_to_lan(dev))
 
     def on_ble(self, prefix: str, ble_device: Any, local_name: str | None = None) -> None:
@@ -449,7 +466,7 @@ class Daemon:
             await self._wait_wake(dev, delay)
             delay = min(delay * 2, RECONNECT_MAX_DELAY)
 
-    async def connect_device(self, dev: Device, *, explicit: bool) -> Session:
+    async def connect_device(self, dev: Device, *, explicit: bool, errors: list[ApiError] | None = None) -> Session:
         """Try the LAN addresses, then each current BLE address, most recently advertised first.
 
         An attempt to a BLE address is abandoned as soon as the phone advertises a new one, which is
@@ -458,7 +475,7 @@ class Daemon:
         lan = self._lan_routes(dev)
         if not lan and not self._ble_visible(dev):
             raise ApiError("not_connected", "no known address for this device")
-        errors: list[ApiError] = []
+        errors = [] if errors is None else errors
         for route in lan:
             try:
                 return await self._connect_route(route, explicit=explicit)
@@ -543,7 +560,8 @@ class Daemon:
         self._absorb_provisional(dev)
         existing = dev.session
         if existing is not None and not existing.closed.is_set():
-            if not (session.transport == "lan" and existing.transport == "ble"):
+            # Only a paired BLE session gives way to LAN; an unpaired one may be mid-pairing.
+            if not (session.transport == "lan" and existing.transport == "ble" and existing.paired):
                 await session.close("already connected", bye=True)
                 return existing
             dev.session = None
@@ -716,18 +734,27 @@ class Daemon:
         return dev
 
     async def api_connect(self, params: dict[str, Any]) -> dict[str, Any]:
+        errors: list[ApiError] = []
         if "host" in params or "port" in params:
             host, port = params.get("host"), params.get("port")
             if not isinstance(host, str) or not host or not isinstance(port, int) or not 0 < port < 65536:
                 raise ApiError("bad_request", "'host' must be a string and 'port' an integer 1-65535")
             route = Route("lan", format_hostport(host, port), lambda: open_tcp(host, port), None, True)
-            session = await self.connect_routes([route], explicit=True)
-            return {"id": session.peer.id}
-        dev = self._known(params.get("id"))
-        dev.auto = True
-        if dev.session is not None:
-            return {"id": dev.id}
-        session = await self.connect_device(dev, explicit=True)
+            attempt = self.connect_routes([route], explicit=True)
+        else:
+            dev = self._known(params.get("id"))
+            dev.auto = True
+            if dev.session is not None:
+                return {"id": dev.id}
+            attempt = self.connect_device(dev, explicit=True, errors=errors)
+        try:
+            async with asyncio.timeout(self.connect_deadline):
+                session = await attempt
+        except TimeoutError:
+            tried = "; ".join(e.message for e in errors)
+            raise ApiError(
+                "timeout", f"no connection within {self.connect_deadline:g} s" + (f" ({tried})" if tried else "")
+            ) from None
         return {"id": session.peer.id}  # differs from the request for a provisional device
 
     async def api_disconnect(self, params: dict[str, Any]) -> bool:
@@ -820,4 +847,10 @@ class Daemon:
         return {"mime": mime, "data": base64.b64encode(raw).decode("ascii")}
 
     def api_status(self) -> dict[str, Any]:
-        return {"version": __version__, "name": self.name, "deviceId": self.device_id}
+        return {
+            "version": __version__,
+            "name": self.name,
+            "deviceId": self.device_id,
+            "ble": self.ble_state,
+            "bleError": self.ble_error,
+        }
