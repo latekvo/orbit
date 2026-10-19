@@ -210,8 +210,10 @@ class ResponderSession(
         host.sessionChanged(this)
         hub.subscribe(hubListener) { activities ->
             enqueue {
-                val now = clock()
                 val wire = activities.map { a -> sendArtFor(a) }
+                // Stamp after the art went out: on BLE that can take seconds, and `now` anchors the
+                // receiver's clock offset and media positions.
+                val now = clock()
                 send(buildJsonObject {
                     put("t", "snapshot")
                     put("now", now)
