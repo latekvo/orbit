@@ -10,14 +10,18 @@ dependencies = [
     "dbus-fast>=2.21; sys_platform == 'linux'",
 ]
 
+[project.optional-dependencies]
+applet = ["PySide6-Essentials>=6.7"]
+
 [project.scripts]
 orbitd = "orbit.daemon.main:main"
 orbit = "orbit.cli:main"
 orbit-fakephone = "orbit.fakephone.main:main"
 orbit-mpris = "orbit.mpris:main"
+orbit-applet = "orbit.applet.app:main"
 
 [dependency-groups]
-dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6"]
+dev = ["pytest>=8", "pytest-asyncio>=0.23", "ruff>=0.6", "pytest-qt>=4.4", "PySide6-Essentials>=6.7"]
 
 [build-system]
 requires = ["hatchling"]
