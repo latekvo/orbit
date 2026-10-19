@@ -79,10 +79,7 @@ def device_status_text(device: Mapping[str, Any]) -> str:
     transport = {"lan": "Wi-Fi", "ble": "Bluetooth"}
     if device.get("connected"):
         via = transport.get(device.get("transport") or "", device.get("transport") or "")
-        text = f"Connected via {via}" if via else "Connected"
-        if device.get("transport") == "lan" and device.get("address"):
-            text += f" - {device['address']}"
-        return text
+        return f"Connected via {via}" if via else "Connected"
     seen = [transport.get(t, t) for t in device.get("discovered") or []]
     if seen:
         return "Nearby (" + ", ".join(seen) + ")"

@@ -3,22 +3,24 @@
 from __future__ import annotations
 
 import copy
-from typing import Any
+from typing import Any, Callable
 
 from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter, QPainterPath, QPixmap
-from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QProgressBar, QSizePolicy,
+from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap,
+                           QTextLayout, QTextOption)
+from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QProgressBar, QSizePolicy,
                                QSlider, QStyle, QStyleOptionSlider, QToolButton, QVBoxLayout, QWidget)
 
 from shiboken6 import isValid
 
+from . import actions as acts
 from . import icons
 from .client import DaemonClient
 from .model import chrono_value_ms, format_clock, media_position_ms, now_ms
 from .theme import Theme
 
 ERROR_VISIBLE_MS = 5000
-MEDIA_TRANSPORT = {"media.previous", "media.play", "media.pause", "media.next", "media.stop"}
+PILL_MAX_TEXT = 120
 
 
 class ElidedLabel(QLabel):
@@ -45,6 +47,57 @@ class ElidedLabel(QLabel):
     def _elide(self) -> None:
         width = max(self.width(), 10)
         super().setText(QFontMetrics(self.font()).elidedText(self._full, Qt.TextElideMode.ElideRight, width))
+
+
+class ClampedLabel(QLabel):
+    """Wrapped text clamped to `max_lines` with the last line elided; long words break anywhere."""
+
+    def __init__(self, max_lines: int = 3, parent: QWidget | None = None):
+        super().__init__(parent)
+        self._full = ""
+        self._max_lines = max_lines
+        self.setTextFormat(Qt.TextFormat.PlainText)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+
+    def setFullText(self, text: str) -> None:
+        self._full = (text or "").replace("\r\n", "\n").replace("\n", "\u2028")
+        self._relayout()
+
+    def fullText(self) -> str:
+        return self._full.replace("\u2028", "\n")
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self._relayout()
+
+    def _relayout(self) -> None:
+        width = max(self.width(), 10)
+        layout = QTextLayout(self._full, self.font())
+        opt = QTextOption()
+        opt.setWrapMode(QTextOption.WrapMode.WrapAtWordBoundaryOrAnywhere)
+        layout.setTextOption(opt)
+        layout.beginLayout()
+        spans = []
+        while True:
+            line = layout.createLine()
+            if not line.isValid():
+                break
+            line.setLineWidth(width)
+            spans.append((line.textStart(), line.textLength()))
+        layout.endLayout()
+        fm = QFontMetrics(self.font())
+        lines = []
+        for i, (start, length) in enumerate(spans[:self._max_lines]):
+            if i == self._max_lines - 1 and len(spans) > self._max_lines:
+                rest = self._full[start:].replace("\u2028", " ")
+                lines.append(fm.elidedText(rest, Qt.TextElideMode.ElideRight, width))
+            else:
+                lines.append(self._full[start:start + length].replace("\u2028", "").rstrip())
+        text = "\n".join(lines)
+        clamped = len(spans) > self._max_lines
+        self.setToolTip(self.fullText() if clamped else "")
+        if text != self.text():
+            super().setText(text)
 
 
 class ArtView(QWidget):
@@ -117,13 +170,137 @@ class SeekSlider(QSlider):
         super().mousePressEvent(event)
 
 
-def _action_icon_name(action: dict) -> str | None:
-    name = action.get("icon")
-    if icons.has_icon(name):
-        return name
-    if not name:
-        return icons.ACTION_ID_ICONS.get(action.get("id", ""))
-    return None
+class ActionStrip(QWidget):
+    """Up to `max_rows` rows of buttons; what does not fit moves into a trailing "more" menu."""
+
+    def __init__(self, theme: Theme, center: bool, spacing: int, max_rows: int = 1,
+                 parent: QWidget | None = None):
+        super().__init__(parent)
+        self._center = center
+        self._max_rows = max_rows
+        self._spacing = spacing
+        self._buttons: list[QToolButton] = []
+        self._hidden: list[QToolButton] = []
+        self._menu_only: list[tuple[str, str, QIcon | None]] = []
+        self._on_menu_only: Callable[[str], None] = lambda aid: None
+        self.more = QToolButton(self)
+        self.more.setObjectName("overflow")
+        self.more.setProperty("role", "media")
+        self.more.setToolTip("More actions")
+        self.more.setIcon(icons.icon("more", theme.text))
+        self.more.setFixedSize(32, 32)
+        self.more.setIconSize(QSize(20, 20))
+        self.more.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.more.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.more.setStyleSheet("QToolButton::menu-indicator { image: none; width: 0; }")
+        self.menu = QMenu(self.more)
+        self.menu.aboutToShow.connect(self.populate_menu)
+        self.more.setMenu(self.menu)
+        self.more.hide()
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Fixed)
+
+    def set_buttons(self, buttons: list[QToolButton]) -> None:
+        self._buttons = buttons
+        for b in buttons:
+            b.setParent(self)
+        self.relayout()
+
+    def set_menu_only(self, entries: list[tuple[str, str, QIcon | None]], on_trigger: Callable[[str], None]) -> None:
+        self._menu_only = entries
+        self._on_menu_only = on_trigger
+        self.relayout()
+
+    def buttons(self) -> list[QToolButton]:
+        return list(self._buttons)
+
+    @staticmethod
+    def _hint(b: QWidget) -> QSize:
+        return b.sizeHint().expandedTo(b.minimumSize()).boundedTo(b.maximumSize())
+
+    def _fill(self, items: list[QWidget], width: int) -> list[list[QWidget]]:
+        """Greedy rows of `items` within `width` and `max_rows`; stops at the first misfit."""
+        rows: list[list[QWidget]] = [[]]
+        used = 0
+        for item in items:
+            w = self._hint(item).width()
+            if rows[-1] and used + self._spacing + w > width:
+                if len(rows) == self._max_rows:
+                    break
+                rows.append([])
+                used = 0
+            if not rows[-1] and w > width:
+                break
+            used += (self._spacing if rows[-1] else 0) + w
+            rows[-1].append(item)
+        return rows
+
+    def _plan(self, width: int) -> tuple[list[list[QWidget]], list[QToolButton]]:
+        rows = self._fill(self._buttons, width)
+        placed = sum(len(r) for r in rows)
+        if placed == len(self._buttons) and not self._menu_only:
+            return rows, []
+        for keep in range(placed, -1, -1):
+            rows = self._fill(self._buttons[:keep] + [self.more], width)
+            if sum(len(r) for r in rows) == keep + 1:
+                return rows, self._buttons[keep:]
+        return [[self.more]], list(self._buttons)
+
+    def _height(self, rows: list[list[QWidget]]) -> int:
+        heights = [max(self._hint(i).height() for i in r) for r in rows if r]
+        return sum(heights) + self._spacing * max(len(heights) - 1, 0)
+
+    def sizeHint(self) -> QSize:  # noqa: N802
+        items = self._buttons + ([self.more] if self._menu_only else [])
+        widths = [self._hint(i).width() for i in items]
+        return QSize(sum(widths) + self._spacing * max(len(widths) - 1, 0), self.height())
+
+    def minimumSizeHint(self) -> QSize:  # noqa: N802
+        return QSize(self.more.width(), self.height())
+
+    def resizeEvent(self, event) -> None:  # noqa: N802
+        super().resizeEvent(event)
+        self.relayout()
+
+    def relayout(self) -> None:
+        width, sp = max(self.width(), 1), self._spacing
+        rows, self._hidden = self._plan(width)
+        y = 0
+        for row in rows:
+            if not row:
+                continue
+            row_h = max(self._hint(i).height() for i in row)
+            row_w = sum(self._hint(i).width() for i in row) + sp * (len(row) - 1)
+            x = max((width - row_w) // 2, 0) if self._center else 0
+            for item in row:
+                hint = self._hint(item)
+                item.setGeometry(x, y + (row_h - hint.height()) // 2, hint.width(), hint.height())
+                item.show()
+                x += hint.width() + sp
+            y += row_h + sp
+        for b in self._hidden:
+            b.hide()
+        if not any(self.more in r for r in rows):
+            self.more.hide()
+        height = self._height(rows) or self.more.height()
+        if self.height() != height or self.minimumHeight() != height:
+            self.setFixedHeight(height)
+
+    def populate_menu(self) -> list[QAction]:
+        """(Re)build the overflow menu: buttons that did not fit, then menu-only actions."""
+        self.menu.clear()
+        entries = []
+        for b in self._hidden:
+            act = self.menu.addAction(b.icon(), b.toolTip() or b.text())
+            act.setData(b.property("actionId"))
+            act.setEnabled(b.isEnabled())
+            act.triggered.connect(b.click)
+            entries.append(act)
+        for aid, label, ic in self._menu_only:
+            act = self.menu.addAction(ic or QIcon(), label)
+            act.setData(aid)
+            act.triggered.connect(lambda _=False, a=aid: self._on_menu_only(a))
+            entries.append(act)
+        return entries
 
 
 class ActivityCard(QFrame):
@@ -137,7 +314,11 @@ class ActivityCard(QFrame):
         self.activity: dict = {}
         self._actions_sig: Any = None
         self._buttons: dict[str, QToolButton] = {}
+        self._slot_buttons: dict[str, QToolButton] = {}
         self._inputs: dict[str, QLineEdit] = {}
+        self._input_sends: dict[str, QToolButton] = {}
+        self.transport_strip: ActionStrip | None = None
+        self.secondary_strip: ActionStrip | None = None
         self._optimistic_media: dict | None = None
 
         root = QVBoxLayout(self)
@@ -166,10 +347,8 @@ class ActivityCard(QFrame):
         self.title.setProperty("role", "title")
         self.subtitle = ElidedLabel()
         self.subtitle.setProperty("role", "muted")
-        self.text = QLabel()
+        self.text = ClampedLabel(max_lines=3)
         self.text.setProperty("role", "muted")
-        self.text.setWordWrap(True)
-        self.text.setTextFormat(Qt.TextFormat.PlainText)
         texts.addWidget(self.title)
         texts.addWidget(self.subtitle)
         texts.addWidget(self.text)
@@ -222,6 +401,7 @@ class ActivityCard(QFrame):
         self.error = QLabel()
         self.error.setProperty("role", "error")
         self.error.setWordWrap(True)
+        self.error.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
         self.error.hide()
         self._error_timer = QTimer(self, singleShot=True)
         self._error_timer.timeout.connect(self.error.hide)
@@ -263,7 +443,7 @@ class ActivityCard(QFrame):
         self.title.setFullText(a.get("title") or "")
         self.subtitle.setFullText(a.get("subtitle") or "")
         self.subtitle.setVisible(bool(a.get("subtitle")))
-        self.text.setText(a.get("text") or "")
+        self.text.setFullText(a.get("text") or "")
         self.text.setVisible(bool(a.get("text")))
 
         self.art.setVisible(bool(a.get("artKey")))
@@ -333,72 +513,120 @@ class ActivityCard(QFrame):
     def _rebuild_actions(self) -> None:
         actions = [x for x in self.activity.get("actions") or [] if isinstance(x, dict) and x.get("id")]
         is_media = self.activity.get("kind") == "media"
-        sig = (is_media, [(x.get("id"), x.get("label"), x.get("icon"), bool(x.get("input"))) for x in actions])
-        if sig == self._actions_sig:
-            return
-        self._actions_sig = sig
-        drafts = {aid: le.text() for aid, le in self._inputs.items()}
-        while self.actions_layout.count():
-            item = self.actions_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-            elif item.layout():
-                _clear_layout(item.layout())
-        self._buttons.clear()
-        self._inputs.clear()
-
-        plain = [x for x in actions if not x.get("input")]
-        inputs = [x for x in actions if x.get("input")]
-        if plain:
-            row = QHBoxLayout()
-            row.setSpacing(6)
-            transport = [x for x in plain if is_media and x["id"] in MEDIA_TRANSPORT]
-            others = [x for x in plain if x not in transport]
-            if transport:
-                row.addStretch(1)
-                for x in transport:
-                    row.addWidget(self._make_button(x, media=True))
-                row.addStretch(1)
-                for x in others:
-                    row.addWidget(self._make_button(x, media=True))
-            else:
-                for x in others:
-                    row.addWidget(self._make_button(x, media=False))
-                row.addStretch(1)
-            self.actions_layout.addLayout(row)
-        for x in inputs:
-            self.actions_layout.addWidget(self._make_input(x, drafts.get(x["id"], "")))
+        # Widgets are keyed by slot, not label, so a toggle relabelling itself keeps its button.
+        slots = (is_media, [(acts.slot_key(x, is_media), bool(x.get("input")), acts.icon_for(x) is not None)
+                            for x in actions])
+        if slots != self._actions_sig:
+            self._actions_sig = slots
+            self._build_action_widgets(actions, is_media)
+        self._apply_actions(actions, is_media)
         self.actions_box.setVisible(bool(actions))
 
-    def _make_button(self, action: dict, media: bool) -> QToolButton:
-        aid = action["id"]
-        label = action.get("label") or aid
+    def _build_action_widgets(self, actions: list[dict], is_media: bool) -> None:
+        drafts = {aid: le.text() for aid, le in self._inputs.items()}
+        _clear_layout(self.actions_layout)
+        self._slot_buttons = {}
+        self._inputs.clear()
+        self._input_sends.clear()
+        self.transport_strip = self.secondary_strip = None
+
+        plain = [x for x in actions if not x.get("input")]
+        if is_media:
+            transport = [x for x in plain if x["id"] in acts.TRANSPORT_IDS]
+            secondary = [x for x in plain if x not in transport]
+            if transport:
+                self.transport_strip = ActionStrip(self.theme, center=True, spacing=10)
+                self.transport_strip.setObjectName("transportStrip")
+                self.transport_strip.set_buttons([self._new_button(x, "transport") for x in transport])
+                self.actions_layout.addWidget(self.transport_strip)
+            if secondary:
+                self.secondary_strip = ActionStrip(self.theme, center=True, spacing=4)
+                self.secondary_strip.set_buttons([self._new_button(x, "secondary") for x in secondary
+                                                  if acts.icon_for(x)])
+        elif plain:
+            self.secondary_strip = ActionStrip(self.theme, center=False, spacing=6, max_rows=2)
+            self.secondary_strip.set_buttons([self._new_button(x, "pill") for x in plain])
+        if self.secondary_strip is not None:
+            self.secondary_strip.setObjectName("secondaryStrip")
+            self.actions_layout.addWidget(self.secondary_strip)
+        for x in actions:
+            if x.get("input"):
+                self.actions_layout.addWidget(self._make_input(x, drafts.get(x["id"], "")))
+
+    def _new_button(self, action: dict, kind: str) -> QToolButton:
         btn = QToolButton()
-        btn.setObjectName(f"action:{aid}")
         btn.setCursor(Qt.CursorShape.PointingHandCursor)
-        btn.setToolTip(label)
-        btn.setAccessibleName(label)
-        icon_name = _action_icon_name(action)
-        primary = media and aid in ("media.play", "media.pause")
-        if icon_name:
-            color = "#ffffff" if primary else self.theme.text
-            btn.setIcon(icons.icon(icon_name, color))
-        if media and icon_name:
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
-            btn.setIconSize(QSize(24, 24) if primary else QSize(22, 22))
-            btn.setProperty("role", "primary" if primary else "media")
-            if primary:
-                btn.setStyleSheet(f"QToolButton {{ background: {self.accent()}; }}"
-                                  f"QToolButton:hover {{ background: {QColor(self.accent()).lighter(115).name()}; }}")
-        else:
-            btn.setText(label)
-            btn.setIconSize(QSize(16, 16))
+        btn.setProperty("kind", kind)
+        btn.clicked.connect(lambda _=False, b=btn: self.trigger(b.property("actionId")))
+        if kind == "pill":
             btn.setProperty("role", "pill")
-            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon if icon_name
-                                   else Qt.ToolButtonStyle.ToolButtonTextOnly)
-        btn.clicked.connect(lambda: self.trigger(aid))
-        self._buttons[aid] = btn
+            btn.setIconSize(QSize(16, 16))
+        else:
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonIconOnly)
+            btn.setProperty("role", "media")
+            side, icon_side = (36, 24) if kind == "transport" else (32, 20)
+            btn.setFixedSize(side, side)
+            btn.setIconSize(QSize(icon_side, icon_side))
+        self._slot_buttons[acts.slot_key(action, kind != "pill")] = btn
         return btn
+
+    def _apply_actions(self, actions: list[dict], is_media: bool) -> None:
+        """Refresh ids, labels, glyphs and toggle states in place."""
+        self._buttons = {}
+        menu_only = []
+        for x in actions:
+            aid, label = x["id"], x.get("label") or x["id"]
+            if x.get("input"):
+                field = self._inputs.get(aid)
+                if field is not None:
+                    field.setPlaceholderText((x.get("input") or {}).get("label") or label)
+                    self._buttons[aid] = self._input_sends[aid]
+                continue
+            btn = self._slot_buttons.get(acts.slot_key(x, is_media))
+            if btn is None:
+                menu_only.append((aid, label, self._glyph_icon(x, None)))
+                continue
+            btn.setObjectName(f"action:{aid}")
+            btn.setProperty("actionId", aid)
+            btn.setToolTip(label)
+            btn.setAccessibleName(label)
+            self._style_button(btn, x)
+            self._buttons[aid] = btn
+        for strip in (self.transport_strip, self.secondary_strip):
+            if strip is not None:
+                strip.set_menu_only(menu_only if strip is self.secondary_strip else [],
+                                    lambda aid: self.trigger(aid))
+
+    def _glyph_icon(self, action: dict, color: str | None):
+        glyph = acts.icon_for(action)
+        if glyph is None:
+            return None
+        state = acts.toggle_state(action, glyph)
+        if glyph == "like" and state != "active":
+            glyph = "like_outline"
+        elif glyph == "repeat" and state == "one":
+            glyph = "repeat_one"
+        if color is None:
+            color = {"active": self.accent(), "one": self.accent(), "inactive": self.theme.muted}.get(
+                state or "", self.theme.text)
+        return icons.icon(glyph, color)
+
+    def _style_button(self, btn: QToolButton, action: dict) -> None:
+        kind = btn.property("kind")
+        primary = kind == "transport" and action["id"] in ("media.play", "media.pause")
+        btn.setProperty("toggleState", acts.toggle_state(action) or "")
+        ic = self._glyph_icon(action, "#ffffff" if primary else None)
+        btn.setIcon(ic if ic is not None else QIcon())
+        if kind == "pill":
+            label = action.get("label") or action["id"]
+            btn.setText(QFontMetrics(btn.font()).elidedText(label, Qt.TextElideMode.ElideRight, PILL_MAX_TEXT))
+            btn.setToolButtonStyle(Qt.ToolButtonStyle.ToolButtonTextBesideIcon if ic is not None
+                                   else Qt.ToolButtonStyle.ToolButtonTextOnly)
+        elif primary:
+            btn.setFixedSize(44, 44)
+            accent = self.accent()
+            btn.setStyleSheet(f"QToolButton {{ background: {accent}; border-radius: 22px; }}"
+                              f"QToolButton:hover {{ background: {QColor(accent).lighter(115).name()}; }}")
 
     def _make_input(self, action: dict, draft: str) -> QWidget:
         aid = action["id"]
@@ -408,7 +636,6 @@ class ActivityCard(QFrame):
         row.setSpacing(6)
         field = QLineEdit(draft)
         field.setObjectName(f"input:{aid}")
-        field.setPlaceholderText((action.get("input") or {}).get("label") or action.get("label") or "Reply")
         field.setClearButtonEnabled(True)
         send = QToolButton()
         send.setObjectName(f"action:{aid}")
@@ -423,7 +650,7 @@ class ActivityCard(QFrame):
         send.clicked.connect(submit)
         row.addWidget(field, 1)
         row.addWidget(send)
-        self._buttons[aid] = send
+        self._input_sends[aid] = send
         self._inputs[aid] = field
         return box
 

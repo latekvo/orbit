@@ -41,7 +41,20 @@ PATHS = {
                 "0-.28.11-.53.29-.71C3.34 8.78 7.46 7 12 7s8.66 1.78 11.71 4.67c.18.18.29.43.29.71 "
                 "0 .28-.11.53-.29.71l-2.48 2.48c-.18.18-.43.29-.71.29-.27 0-.52-.11-.7-.28-.79-.74"
                 "-1.69-1.36-2.67-1.85-.33-.16-.56-.5-.56-.9v-3.1C15.15 9.25 13.6 9 12 9z",
-    # UI-only glyphs
+    # Beyond the protocol's well-known set: heuristic action glyphs and UI-only glyphs.
+    "like_outline": "M16.5 3c-1.74 0-3.41.81-4.5 2.09C10.91 3.81 9.24 3 7.5 3 4.42 3 2 5.42 2 8.5c0 "
+                    "3.78 3.4 6.86 8.55 11.54L12 21.35l1.45-1.32C18.6 15.36 22 12.28 22 8.5 22 5.42 "
+                    "19.58 3 16.5 3zm-4.4 15.55l-.1.1-.1-.1C7.14 14.24 4 11.39 4 8.5 4 6.5 5.5 5 7.5 "
+                    "5c1.54 0 3.04.99 3.57 2.36h1.87C13.46 5.99 14.96 5 16.5 5c2 0 3.5 1.5 3.5 3.5 0 "
+                    "2.89-3.14 5.74-7.9 10.05z",
+    "repeat_one": "M7 7h10v3l4-4-4-4v3H5v6h2V7zm10 10H7v-3l-4 4 4 4v-3h12v-6h-2v4zm-4-2V9h-1l-2 "
+                  "1v1h1.5v4H13z",
+    "radio": "M3.24 6.15C2.51 6.43 2 7.17 2 8v12c0 1.1.89 2 2 2h16c1.11 0 2-.9 2-2V8c0-1.11-.89-2-2-2"
+             "H8.3l8.26-3.34L15.88 1 3.24 6.15zM7 20c-1.66 0-3-1.34-3-3s1.34-3 3-3 3 1.34 3 3-1.34 "
+             "3-3 3zm13-8h-2v-2h-2v2H4V8h16v4z",
+    "playlist_add": "M14 10H2v2h12v-2zm0-4H2v2h12V6zm4 8v-4h-2v4h-4v2h4v4h2v-4h4v-2h-4zM2 16h8v-2H2v2z",
+    "more": "M6 10c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2zm12 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 "
+            "2-2-.9-2-2-2zm-6 0c-1.1 0-2 .9-2 2s.9 2 2 2 2-.9 2-2-.9-2-2-2z",
     "send": "M2.01 21L23 12 2.01 3 2 10l15 2-15 2z",
     "phone": "M17 1.01L7 1c-1.1 0-2 .9-2 2v18c0 1.1.9 2 2 2h10c1.1 0 2-.9 2-2V3c0-1.1-.9-1.99-2-1.99z"
              "M17 19H7V5h10v14z",
@@ -56,13 +69,6 @@ ORBIT_SVG = """<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">
  stroke="{c}" stroke-width="1.7"/>
 <circle cx="19.97" cy="7.4" r="2.1" fill="{c}"/>
 </svg>"""
-
-# Icons for well-known action ids whose action carries no (known) icon.
-ACTION_ID_ICONS = {
-    "media.play": "play", "media.pause": "pause", "media.next": "next",
-    "media.previous": "previous", "media.stop": "stop", "dismiss": "close", "open": "open",
-}
-
 
 def svg_for(name: str, color: str) -> bytes | None:
     if name == "orbit":
@@ -103,7 +109,3 @@ class _SvgEngine(QIconEngine):
 def icon(name: str, color: QColor | str) -> QIcon | None:
     data = svg_for(name, QColor(color).name())
     return QIcon(_SvgEngine(data)) if data else None
-
-
-def has_icon(name: str | None) -> bool:
-    return bool(name) and (name in PATHS or name == "orbit")

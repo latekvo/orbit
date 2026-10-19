@@ -99,7 +99,7 @@ class DaemonClient(QObject):
             self._on_disconnected()
 
     def _on_disconnected(self) -> None:
-        if self.connected:
+        if self.connected and not self._stopped:
             log.warning("lost connection to orbitd")
         self._set_disconnected()
         if not self._stopped and not self._retry.isActive():

@@ -3,7 +3,7 @@
 Stdlib only. Serves NDJSON over a Unix socket from an asyncio loop on a daemon thread;
 the test-facing API (``MockOrbitd``) is thread-safe.
 
-    uv run python tests/applet/mock_orbitd.py [--socket PATH] [--scenario demo|empty|idle]
+    uv run python tests/applet/mock_orbitd.py [--socket PATH] [--scenario demo|empty|idle|crowded]
         [--pairing-on-start] [--no-evolve] [--tick SECONDS]
 """
 
@@ -327,8 +327,8 @@ def _act(label: str, icon: str, id: str, **extra) -> dict:
 class MockOrbitd:
     def __init__(self, socket_path: str, *, scenario: str = "demo", evolve: bool = True,
                  tick_s: float = 1.0, pairing_on_start: bool = False):
-        if scenario not in ("demo", "empty", "idle"):
-            raise ValueError(f"unknown scenario {scenario!r} (expected demo, empty or idle)")
+        if scenario not in ("demo", "empty", "idle", "crowded"):
+            raise ValueError(f"unknown scenario {scenario!r} (expected demo, empty, idle or crowded)")
         self.socket_path = socket_path
         self.evolve = evolve
         self.tick_s = tick_s
@@ -367,6 +367,9 @@ class MockOrbitd:
         self._devices.append(dev("Pixel 8", paired=True, connected=True, transport="lan",
                                  address="192.168.1.20:47820", discovered=["lan", "ble"]))
         if scenario == "idle":
+            return
+        if scenario == "crowded":
+            self._build_crowded()
             return
         self._devices += [
             dev("Galaxy Tab S9", paired=True, connected=True, transport="ble", address=None,
@@ -456,6 +459,68 @@ class MockOrbitd:
         self._describe_navigation(navigation, now)
 
         self._acts = [media, download, timer, message, backup, navigation]
+
+    def _build_crowded(self) -> None:
+        """Many and long actions, long texts: a Metrolist-like player as a real phone sends it."""
+        icons = {name: self.add_art(data) for name, data in app_icons().items()}
+        self._album_keys = [self.add_art(data) for data in album_arts()]
+        now = now_ms()
+        media = {
+            "device": PIXEL_8, "id": "media:com.metrolist.music", "kind": "media",
+            "app": {"id": "com.metrolist.music", "name": "Metrolist"},
+            "title": "Sweater Weather (Extended Live Version Recorded at the Hollywood Bowl) [Remastered]",
+            "subtitle": "The Neighbourhood, Featuring An Unreasonably Long List Of Guest Artists",
+            "iconKey": icons["spotify"], "artKey": self._album_keys[1],
+            "media": {"state": "playing", "positionMs": 26603, "positionAtMs": now,
+                      "durationMs": 252401, "rate": 1.0, "seekable": True},
+            "actions": [
+                _act("Previous", "previous", "media.previous"), _act("Pause", "pause", "media.pause"),
+                _act("Next", "next", "media.next"), _act("Stop", "stop", "media.stop"),
+                {"id": "media.custom.TOGGLE_LIKE", "label": "Remove like"},
+                _act("Repeat mode off", "repeat", "media.custom.TOGGLE_REPEAT_MODE"),
+                _act("Shuffle on", "shuffle", "media.custom.TOGGLE_SHUFFLE"),
+                {"id": "media.custom.TOGGLE_START_RADIO", "label": "Start radio"},
+                {"id": "media.custom.ADD_TO_TARGET_PLAYLIST", "label": "Quick-add destination"},
+                {"id": "open", "label": "Open"},
+            ],
+            "updatedMs": now,
+        }
+        chat = {
+            "device": PIXEL_8, "id": "notif:com.whatsapp:group", "kind": "generic",
+            "app": {"id": "com.whatsapp", "name": "WhatsApp Messenger For Very Small Businesses"},
+            "title": "Weekend hiking trip planning committee (official, please read the pinned message)",
+            "subtitle": "Bartholomew-Alexander Montgomery-Smithington",
+            "text": "Here is the route: https://maps.example.com/routes/very-long-route-identifier-"
+                    "0123456789abcdef0123456789abcdef0123456789abcdef and bring water.",
+            "iconKey": icons["messages"], "color": "#25d366",
+            "actions": [{"id": f"notif.{i}", "label": label} for i, label in enumerate([
+                "Mark as read", "Mute conversation for 8 hours", "Archive this chat",
+                "Call back now", "Block and report this sender", "Snooze for one hour"])]
+            + [{"id": "notif.6", "label": "Reply", "icon": "reply",
+                "input": {"kind": "text", "label": "Reply to the group"}}],
+            "updatedMs": now,
+        }
+        download = {
+            "device": PIXEL_8, "id": "notif:com.android.chrome:bigdownload", "kind": "progress",
+            "app": {"id": "com.android.chrome", "name": "Chrome"}, "iconKey": icons["chrome"],
+            "title": "Downloading a-file-with-an-absurdly-long-name-that-never-ends-v2.0.1-final-FINAL.zip",
+            "subtitle": "1.2 GB of 5.7 GB", "progress": {"value": 21, "max": 100, "indeterminate": False},
+            "actions": [{"id": "notif.0", "label": "Pause download", "icon": "pause"},
+                        {"id": "notif.1", "label": "Cancel download", "icon": "close"}],
+            "updatedMs": now,
+        }
+        self._acts = [media, chat, download]
+
+    @staticmethod
+    def _toggle_custom(act: dict, action_id: str) -> None:
+        """Relabel Metrolist-style toggles the way the real app does."""
+        cycles = {"TOGGLE_LIKE": ["Like", "Remove like"], "TOGGLE_SHUFFLE": ["Shuffle off", "Shuffle on"],
+                  "TOGGLE_REPEAT_MODE": ["Repeat mode off", "Repeat mode one", "Repeat mode all"]}
+        cycle = cycles.get(action_id.removeprefix("media.custom."))
+        for a in act.get("actions", []):
+            if cycle and a.get("id") == action_id:
+                i = cycle.index(a["label"]) if a.get("label") in cycle else -1
+                a["label"] = cycle[(i + 1) % len(cycle)]
 
     def _new_pairing(self, device_id: str, name: str, sas: str | None = None) -> dict:
         return {"session": secrets.token_hex(8), "deviceId": device_id, "name": name,
@@ -981,6 +1046,8 @@ class MockOrbitd:
                 duration = media.get("durationMs")
                 media["positionMs"] = max(0, min(value, duration) if duration else value)
                 media["positionAtMs"] = now
+            elif action_id.startswith("media.custom."):
+                self._toggle_custom(act, action_id)
             elif action_id in ("media.next", "media.previous"):
                 if role == "playlist":
                     step = 1 if action_id == "media.next" else -1
@@ -1095,7 +1162,7 @@ def default_socket_path() -> str:
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Mock orbitd local-API daemon")
     parser.add_argument("--socket", default=default_socket_path())
-    parser.add_argument("--scenario", choices=("demo", "empty", "idle"), default="demo")
+    parser.add_argument("--scenario", choices=("demo", "empty", "idle", "crowded"), default="demo")
     parser.add_argument("--pairing-on-start", action="store_true")
     parser.add_argument("--no-evolve", dest="evolve", action="store_false")
     parser.add_argument("--tick", type=float, default=1.0, metavar="SECONDS")
