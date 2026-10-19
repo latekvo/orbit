@@ -48,7 +48,7 @@ def main() -> None:
         widget.grab().save(str(path))
         print(path)
 
-    for scenario in ("demo", "idle", "empty", "down"):
+    for scenario in ("demo", "crowded", "idle", "empty", "down"):
         sock = str(Path(tempfile.mkdtemp(prefix="orb", dir="/tmp")) / "s.sock")
         mock = MockOrbitd(sock, scenario="empty" if scenario == "down" else scenario, evolve=False)
         if scenario != "down":

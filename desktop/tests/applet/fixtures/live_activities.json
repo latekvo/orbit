@@ -1,0 +1,72 @@
+[
+ {
+  "device": "c1371cdabfd6798bb6969bb047e6c0ab",
+  "id": "media:com.metrolist.music",
+  "kind": "media",
+  "app": {
+   "id": "com.metrolist.music",
+   "name": "Metrolist"
+  },
+  "title": "Sweater Weather",
+  "subtitle": "The Neighbourhood",
+  "iconKey": "fa2c3778fe9c0b3d",
+  "artKey": "6286a1cccffa2b63",
+  "media": {
+   "state": "playing",
+   "positionMs": 26603,
+   "durationMs": 252401,
+   "rate": 1.0,
+   "seekable": true,
+   "positionAtMs": 1792433582220
+  },
+  "actions": [
+   {
+    "id": "media.previous",
+    "label": "Previous",
+    "icon": "previous"
+   },
+   {
+    "id": "media.pause",
+    "label": "Pause",
+    "icon": "pause"
+   },
+   {
+    "id": "media.next",
+    "label": "Next",
+    "icon": "next"
+   },
+   {
+    "id": "media.stop",
+    "label": "Stop",
+    "icon": "stop"
+   },
+   {
+    "id": "media.custom.TOGGLE_LIKE",
+    "label": "Remove like"
+   },
+   {
+    "id": "media.custom.TOGGLE_REPEAT_MODE",
+    "label": "Repeat mode off",
+    "icon": "repeat"
+   },
+   {
+    "id": "media.custom.TOGGLE_SHUFFLE",
+    "label": "Shuffle on",
+    "icon": "shuffle"
+   },
+   {
+    "id": "media.custom.TOGGLE_START_RADIO",
+    "label": "Start radio"
+   },
+   {
+    "id": "media.custom.ADD_TO_TARGET_PLAYLIST",
+    "label": "Quick-add destination"
+   },
+   {
+    "id": "open",
+    "label": "Open"
+   }
+  ],
+  "updatedMs": 1792433582218
+ }
+]
