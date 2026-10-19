@@ -5,7 +5,7 @@ from __future__ import annotations
 import copy
 from typing import Any, Callable
 
-from PySide6.QtCore import QRectF, QSize, Qt, QTimer, Signal
+from PySide6.QtCore import QEvent, QRectF, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import (QAction, QColor, QFont, QFontMetrics, QIcon, QPainter, QPainterPath, QPixmap,
                            QTextLayout, QTextOption)
 from PySide6.QtWidgets import (QFrame, QHBoxLayout, QLabel, QLineEdit, QMenu, QProgressBar, QSizePolicy,
@@ -241,8 +241,11 @@ class ActionStrip(QWidget):
             return rows, []
         for keep in range(placed, -1, -1):
             rows = self._fill(self._buttons[:keep] + [self.more], width)
-            if sum(len(r) for r in rows) == keep + 1:
-                return rows, self._buttons[keep:]
+            if sum(len(r) for r in rows) != keep + 1:
+                continue
+            if len(rows) > 1 and rows[-1] == [self.more]:
+                continue  # "more" alone on a row of its own: move a button into the menu instead
+            return rows, self._buttons[keep:]
         return [[self.more]], list(self._buttons)
 
     def _height(self, rows: list[list[QWidget]]) -> int:
@@ -317,8 +320,8 @@ class ActivityCard(QFrame):
         self._slot_buttons: dict[str, QToolButton] = {}
         self._inputs: dict[str, QLineEdit] = {}
         self._input_sends: dict[str, QToolButton] = {}
-        self.transport_strip: ActionStrip | None = None
-        self.secondary_strip: ActionStrip | None = None
+        self.action_strip: ActionStrip | None = None
+        self._open_available = False
         self._optimistic_media: dict | None = None
 
         root = QVBoxLayout(self)
@@ -408,6 +411,8 @@ class ActivityCard(QFrame):
         root.addWidget(self.error)
 
         client.artLoaded.connect(self._on_art_loaded)
+        for w in (self.app_icon, self.app_name, self.art, self.title):
+            w.installEventFilter(self)
         self.update_activity(activity)
 
     @staticmethod
@@ -513,44 +518,33 @@ class ActivityCard(QFrame):
     def _rebuild_actions(self) -> None:
         actions = [x for x in self.activity.get("actions") or [] if isinstance(x, dict) and x.get("id")]
         is_media = self.activity.get("kind") == "media"
+        places = acts.placements(actions, is_media)
         # Widgets are keyed by slot, not label, so a toggle relabelling itself keeps its button.
-        slots = (is_media, [(acts.slot_key(x, is_media), bool(x.get("input")), acts.icon_for(x) is not None)
-                            for x in actions])
+        slots = (is_media, [(acts.slot_key(x, is_media), p) for x, p in zip(actions, places, strict=True)])
         if slots != self._actions_sig:
             self._actions_sig = slots
-            self._build_action_widgets(actions, is_media)
-        self._apply_actions(actions, is_media)
-        self.actions_box.setVisible(bool(actions))
+            self._build_action_widgets(actions, places, is_media)
+        self._apply_actions(actions, places, is_media)
+        self._set_open_target("open" in places)
+        self.actions_box.setVisible(any(p != "open" for p in places))
 
-    def _build_action_widgets(self, actions: list[dict], is_media: bool) -> None:
+    def _build_action_widgets(self, actions: list[dict], places: list[str], is_media: bool) -> None:
         drafts = {aid: le.text() for aid, le in self._inputs.items()}
         _clear_layout(self.actions_layout)
         self._slot_buttons = {}
         self._inputs.clear()
         self._input_sends.clear()
-        self.transport_strip = self.secondary_strip = None
-
-        plain = [x for x in actions if not x.get("input")]
-        if is_media:
-            transport = [x for x in plain if x["id"] in acts.TRANSPORT_IDS]
-            secondary = [x for x in plain if x not in transport]
-            if transport:
-                self.transport_strip = ActionStrip(self.theme, center=True, spacing=10)
-                self.transport_strip.setObjectName("transportStrip")
-                self.transport_strip.set_buttons([self._new_button(x, "transport") for x in transport])
-                self.actions_layout.addWidget(self.transport_strip)
-            if secondary:
-                self.secondary_strip = ActionStrip(self.theme, center=True, spacing=4)
-                self.secondary_strip.set_buttons([self._new_button(x, "secondary") for x in secondary
-                                                  if acts.icon_for(x)])
-        elif plain:
-            self.secondary_strip = ActionStrip(self.theme, center=False, spacing=6, max_rows=2)
-            self.secondary_strip.set_buttons([self._new_button(x, "pill") for x in plain])
-        if self.secondary_strip is not None:
-            self.secondary_strip.setObjectName("secondaryStrip")
-            self.actions_layout.addWidget(self.secondary_strip)
-        for x in actions:
-            if x.get("input"):
+        self.action_strip = None
+        inline = [x for x, p in zip(actions, places, strict=True) if p == "inline"]
+        if inline or "menu" in places:
+            self.action_strip = ActionStrip(self.theme, center=is_media, spacing=6, max_rows=2)
+            self.action_strip.setObjectName("actionStrip")
+            kinds = [("transport" if x["id"] in acts.TRANSPORT_IDS else "secondary") if is_media else "pill"
+                     for x in inline]
+            self.action_strip.set_buttons([self._new_button(x, k) for x, k in zip(inline, kinds, strict=True)])
+            self.actions_layout.addWidget(self.action_strip)
+        for x, p in zip(actions, places, strict=True):
+            if p == "input":
                 self.actions_layout.addWidget(self._make_input(x, drafts.get(x["id"], "")))
 
     def _new_button(self, action: dict, kind: str) -> QToolButton:
@@ -570,32 +564,47 @@ class ActivityCard(QFrame):
         self._slot_buttons[acts.slot_key(action, kind != "pill")] = btn
         return btn
 
-    def _apply_actions(self, actions: list[dict], is_media: bool) -> None:
+    def _apply_actions(self, actions: list[dict], places: list[str], is_media: bool) -> None:
         """Refresh ids, labels, glyphs and toggle states in place."""
         self._buttons = {}
         menu_only = []
-        for x in actions:
+        for x, place in zip(actions, places, strict=True):
             aid, label = x["id"], x.get("label") or x["id"]
-            if x.get("input"):
-                field = self._inputs.get(aid)
-                if field is not None:
-                    field.setPlaceholderText((x.get("input") or {}).get("label") or label)
-                    self._buttons[aid] = self._input_sends[aid]
-                continue
-            btn = self._slot_buttons.get(acts.slot_key(x, is_media))
-            if btn is None:
+            if place == "input":
+                self._inputs[aid].setPlaceholderText((x.get("input") or {}).get("label") or label)
+                self._buttons[aid] = self._input_sends[aid]
+            elif place == "menu":
                 menu_only.append((aid, label, self._glyph_icon(x, None)))
-                continue
-            btn.setObjectName(f"action:{aid}")
-            btn.setProperty("actionId", aid)
-            btn.setToolTip(label)
-            btn.setAccessibleName(label)
-            self._style_button(btn, x)
-            self._buttons[aid] = btn
-        for strip in (self.transport_strip, self.secondary_strip):
-            if strip is not None:
-                strip.set_menu_only(menu_only if strip is self.secondary_strip else [],
-                                    lambda aid: self.trigger(aid))
+            elif place == "inline":
+                btn = self._slot_buttons[acts.slot_key(x, is_media)]
+                btn.setObjectName(f"action:{aid}")
+                btn.setProperty("actionId", aid)
+                btn.setToolTip(label)
+                btn.setAccessibleName(label)
+                self._style_button(btn, x)
+                self._buttons[aid] = btn
+        if self.action_strip is not None:
+            self.action_strip.set_menu_only(menu_only, lambda aid: self.trigger(aid))
+
+    def _set_open_target(self, available: bool) -> None:
+        """`open` is the card's primary tap target: header, art and title."""
+        self._open_available = available
+        cursor = Qt.CursorShape.PointingHandCursor if available else Qt.CursorShape.ArrowCursor
+        for w in (self.app_icon, self.app_name, self.art, self.title):
+            w.setCursor(cursor)
+        hint = "Open on phone" if available else ""
+        self.app_icon.setToolTip(hint)
+        self.app_name.setToolTip(hint)
+        self.art.setToolTip(hint)
+        title = self.title.fullText()
+        self.title.setToolTip("\n".join(t for t in (title if len(title) > 30 else "", hint) if t))
+
+    def eventFilter(self, obj, event) -> bool:  # noqa: N802
+        if (event.type() == QEvent.Type.MouseButtonRelease and event.button() == Qt.MouseButton.LeftButton
+                and self._open_available and obj.rect().contains(event.position().toPoint())):
+            self.trigger("open")
+            return True
+        return super().eventFilter(obj, event)
 
     def _glyph_icon(self, action: dict, color: str | None):
         glyph = acts.icon_for(action)

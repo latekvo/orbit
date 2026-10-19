@@ -545,6 +545,8 @@ class Panel(QWidget):
             body = self.activities_page.body
             body.adjustSize()
             want = body.sizeHint().height() + 70
+            self.resize(PANEL_WIDTH, max(160, min(want, PANEL_MAX_HEIGHT)))
+            return
         elif self.pages.currentWidget() is self.devices_page:
             want = 460
         else:
