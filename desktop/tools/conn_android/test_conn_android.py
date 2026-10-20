@@ -5,9 +5,6 @@ Slow (each test 10-100 s), so outside the default testpaths:
     (cd ../android/companion && ./gradlew :jvmphone:installDist)
     uv run pytest tools/conn_android -v                 # host-only tests
     CONN_DOCKER=1 uv run pytest tools/conn_android -v   # plus Docker network-fault tests
-
-Tests named ``test_bug_*`` reproduce open findings and fail on the code they were written
-against; the rest are regression checks of behavior that works.
 """
 
 from __future__ import annotations
@@ -51,13 +48,12 @@ async def rig():
     r.cleanup()
 
 
-# ---- open findings ---------------------------------------------------------------------------
+# ---- regression checks -----------------------------------------------------------------------
 
 
-async def test_bug_phone_back_within_grace_still_goes_offline(rig):
+async def test_phone_back_within_grace_never_goes_offline(rig):
     """Companion restarts within the 15 s grace (sticky restart, app update) on a manual route:
-    the reconnect waits for the backoff slot at t=15 s, so the device flips to offline and its
-    activities vanish just before coming back."""
+    the laptop reconnects before the grace ends, so the device never flips to offline."""
     await asyncio.sleep(31)  # a stable session: reconnect starts at once with a 1 s backoff
     rig.t0 = time.monotonic()
     rig.timeline.clear()
@@ -72,9 +68,9 @@ async def test_bug_phone_back_within_grace_still_goes_offline(rig):
     assert "offline" not in states, (back, rig.timeline)
 
 
-async def test_bug_phone_back_after_grace_reconnects_late(rig):
-    """Companion down 35 s (reboot, slow restart) on a manual route: the backoff has grown to
-    32 s, so the laptop reconnects ~28 s after the phone is listening again."""
+async def test_phone_back_after_grace_reconnects_promptly(rig):
+    """Companion down 35 s (reboot, slow restart) on a manual route: the laptop reconnects
+    within 5 s of the phone listening again, whatever the backoff had grown to."""
     await asyncio.sleep(31)
     rig.phone.signal(signal.SIGKILL)
     rig.phone.p.wait(5)
@@ -84,9 +80,6 @@ async def test_bug_phone_back_after_grace_reconnects_late(rig):
     back = rig.now()
     t = await rig.wait_state("connected", 90)
     assert t - back < 5, f"reconnected {t - back:.1f} s after the phone was back"
-
-
-# ---- regression checks -----------------------------------------------------------------------
 
 
 async def test_action_answered_as_failed_is_not_applied_on_resume(rig):
@@ -243,10 +236,9 @@ async def test_lossy_link_actions_all_succeed(drig):
 
 
 @docker_only
-async def test_bug_action_result_queued_behind_album_art(drig):
-    """BLE-like 8 KB/s link, a media app posts new album art (4 x 30 KB): the phone applies the
-    action at once, but its action_result waits behind ~160 KB of art on the single send queue,
-    so the laptop reports `timeout` for an action that was applied ~10 s earlier."""
+async def test_action_result_is_not_queued_behind_album_art(drig):
+    """BLE-like 8 KB/s link while a media app posts new album art (4 x 30 KB): art goes out in
+    parts behind control traffic, so the action's result still arrives as ok."""
     drig.netem("rate 64kbit")
     await drig.client.call("activities.action", {"device": drig.device_id, "activity": "counter", "action": "notif.1"})
     t = time.monotonic()
