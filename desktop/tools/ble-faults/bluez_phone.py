@@ -173,7 +173,7 @@ class Phone:
                 self.sessions[d] = Session(self, d)
 
     def notify(self, data: bytes) -> None:
-        step = max(20, min(244, self.mtu - 3))
+        step = max(20, min(512, self.mtu - 3))  # the companion's notification size (spec 1.2)
         for i in range(0, len(data), step):
             self.tx._value = data[i : i + step]
             self.tx.emit_properties_changed({"Value": self.tx._value})
