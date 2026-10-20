@@ -11,7 +11,7 @@ from daemon_helpers import RawPhone, pin_in, until
 
 from orbit.client import ApiError
 from orbit.daemon import ble, core
-from orbit.daemon.ble import RX_UUID, TX_UUID, BleLink, chunk_size
+from orbit.daemon.ble import PSM_UUID, RX_UUID, TX_UUID, BleLink, chunk_size
 from orbit.daemon.session import NO_RESPONSE
 from orbit.daemon.timeconv import now_ms
 from orbit.proto import FrameStream, KeyPair, device_id, respond
@@ -40,6 +40,7 @@ class FakeGattLink:
     # Addresses the phone rotated away from: like CoreBluetooth, connect() waits out bleak's timeout.
     gone: set[str] = set()
     mtu = 23
+    psm = None  # what the PSM characteristic reads (bytes) or raises (an exception); None: there is none
 
     def __init__(self, device, disconnected_callback=None, timeout=10.0, **_):
         self.address = device.address
@@ -59,7 +60,12 @@ class FakeGattLink:
         self._phone_rx = asyncio.StreamReader()
         central = SimpleNamespace(cancelPeripheralConnection_=lambda _p: self.log.append("cancelPeripheralConnection"))
         self._backend = SimpleNamespace(
-            _peripheral=object(), _central_manager_delegate=SimpleNamespace(central_manager=central)
+            _peripheral=SimpleNamespace(openL2CAPChannel_=self.open_l2cap),
+            _central_manager_delegate=SimpleNamespace(central_manager=central),
+        )
+        offered = {PSM_UUID} if self.psm is not None else set()
+        self.services = SimpleNamespace(
+            get_characteristic=lambda uuid: SimpleNamespace(uuid=uuid) if uuid in offered else None
         )
         FakeGattLink.instances.append(self)
 
@@ -100,6 +106,16 @@ class FakeGattLink:
 
         self._task = asyncio.ensure_future(run_phone())
         self._pump = asyncio.ensure_future(notify())
+
+    async def read_gatt_char(self, char):
+        self.log.append(("read", char.uuid))
+        if isinstance(self.psm, Exception):
+            raise self.psm
+        return bytearray(self.psm)
+
+    def open_l2cap(self, psm):
+        """``CBPeripheral.openL2CAPChannel_``: this phone never answers it."""
+        self.log.append(("open l2cap", psm))
 
     async def start_notify(self, uuid, callback):
         self.log.append(("notify", uuid))
