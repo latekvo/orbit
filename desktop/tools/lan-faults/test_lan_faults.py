@@ -10,12 +10,14 @@ import time
 
 import pytest
 
+from orbit.daemon.core import RECONNECT_MAX_DELAY, RECONNECT_SOON_FOR
+
 MEDIA = "media:com.example.music"
 DEAD_AFTER = 30.0  # spec/PROTOCOL.md 5: close after 30 s without receiving anything
 GRACE = 15.0  # spec/LOCAL_API.md: "reconnecting" for up to 15 s
 SLACK = 3.0
 # What a user can reasonably expect once the network is back: the phone shows up again within a
-# few seconds (no spec number exists; the connector's backoff grows to 60 s).
+# few seconds (no spec number exists; the connector's backoff grows to RECONNECT_MAX_DELAY).
 RECOVER_WITHIN = 10.0
 ACTION_SILENCE = 5.0  # spec/PROTOCOL.md: closed when nothing arrives within 5 s of an action
 
@@ -205,14 +207,21 @@ def test_latency_loss(rig, record, delay_ms, loss):
         a = r.action(action="media.next")
         actions.append((a["dt"], a.get("result", a.get("error"))))
     drops = [x for x in r.transitions(t0) if x[1] != "connected"]
-    # A fresh connection under the same conditions (the user clicks Disconnect, then Connect).
+    # A fresh connection under the same conditions (the user clicks Disconnect, then Connect). It
+    # takes three round trips (TCP, commit/hello, hello/ready): at an RTT of 6 s that is past
+    # devices.connect's 12 s answer (spec/LOCAL_API.md), so then it must connect within four.
     r.call("devices.disconnect", {"id": r.phone_id})
+    t_c = time.time()
     c = r.call("devices.connect", {"id": r.phone_id})
-    record(netem=spec, drops=drops, actions=actions, reconnect=c, applied=len(r.phone_actions(t0)),
+    r.wait(lambda: r.state() == "connected", 30, interval=0.2, what="connected")
+    connected_s = round(time.time() - t_c, 1)
+    record(netem=spec, drops=drops, actions=actions, reconnect=c, connected_s=connected_s,
+           applied=len(r.phone_actions(t0)),
            causes=[ln.split("cause=")[-1] for ln in r.orbitd_log().splitlines() if "session_closed" in ln])  # fmt: skip
     assert not drops, "keepalive misfired"
     assert all(isinstance(res, dict) and res.get("ok") for _, res in actions)
-    assert "result" in c, c
+    rtt = 2 * delay_ms / 1000
+    assert "result" in c or (3 * rtt > 12 and connected_s <= 4 * rtt), c
 
 
 @pytest.mark.parametrize("netem", ["duplicate 25%", "delay 30ms 20ms reorder 25% 50%", "corrupt 1%"])
@@ -758,12 +767,13 @@ def test_repeated_drops_backoff(rig, record):
 
 @pytest.mark.slow
 def test_blackhole_worst_case_recover(rig, record):
-    """Outage long enough for the backoff to reach its 60 s cap; healed right after a failed attempt."""
+    """Outage long enough for the backoff to reach its cap; healed right after a failed attempt."""
     r = rig()
     t_f = r.blackhole()
-    r.wait(lambda: "retrying in 60 s" in r.orbitd_log(), 300, interval=1, what="backoff at cap")
-    n = r.orbitd_log().count("retrying in 60 s")
-    r.wait(lambda: r.orbitd_log().count("retrying in 60 s") > n, 90, interval=0.2, what="next failed attempt")
+    at_cap = f"retrying in {RECONNECT_MAX_DELAY:g} s"
+    r.wait(lambda: at_cap in r.orbitd_log(), RECONNECT_SOON_FOR + 120, interval=1, what="backoff at cap")
+    n = r.orbitd_log().count(at_cap)
+    r.wait(lambda: r.orbitd_log().count(at_cap) > n, RECONNECT_MAX_DELAY + 30, interval=0.2, what="next failed attempt")
     t_h = r.blackhole(False)
     rec = r.wait(lambda: r.state() == "connected", 120, interval=0.5, what="back") and time.time() - t_h
     record(outage_s=round(t_h - t_f, 1), recover_after_heal_s=round(rec, 1))

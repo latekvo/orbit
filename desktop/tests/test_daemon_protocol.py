@@ -8,6 +8,8 @@ import stat
 import pytest
 from daemon_helpers import RawPhone, pin_in, until
 
+import orbit.daemon.core as core_mod
+import orbit.daemon.session as session_mod
 from orbit.client import ApiError
 from orbit.daemon.timeconv import now_ms, to_local
 from orbit.proto import KeyPair, ProtocolError, device_id
@@ -81,6 +83,53 @@ async def test_dead_phone_is_dropped_but_responsive_one_kept(make_daemon, short_
         await asyncio.sleep(1.0)
         assert daemon.devices[alive.id].session is not None
         assert not daemon.devices[alive.id].session.closed.is_set()
+
+
+async def test_ping_deadline_allows_for_the_round_trip_time(make_daemon, short_tmp, monkeypatch):
+    """A link whose round trip (0.4 s) is longer than the ping deadline (0.3 s) is slow, not dead."""
+    monkeypatch.setattr(session_mod, "PROBE_FLOWING", 0.05)  # the pong gap would otherwise pass as "flowing"
+    rtt = 0.4
+    pongs = []
+
+    async def slow_link(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+
+        async def pong(req):
+            await asyncio.sleep(rtt)
+            await ch.send({"t": "pong", "req": req})
+            pongs.append(req)
+
+        while True:
+            msg = await ch.recv()
+            if msg["t"] == "ping":
+                asyncio.ensure_future(pong(msg["req"]))
+
+    async with RawPhone(slow_link, handshake_delay=rtt) as phone:
+        daemon = await connect_pinned(make_daemon, short_tmp, phone, keepalive=0.6, stall_after=0.3, dead_after=10)
+        session = daemon.devices[phone.id].session
+        await asyncio.sleep(3)
+        assert not session.closed.is_set(), session.close_reason
+        assert len(pongs) >= 3
+
+
+async def test_handshake_deadline_allows_for_a_slow_tcp_connect(make_daemon, api_for, monkeypatch):
+    """A TCP connect that took 0.2 s (a round trip) stretches the 0.3 s handshake deadline to 1.1 s."""
+    real_open = core_mod.open_tcp
+
+    async def slow_open(host, port):
+        await asyncio.sleep(0.2)
+        return await real_open(host, port)
+
+    async def unpaired(ch):
+        await ch.send({"t": "ready", "paired": False, "now": now_ms()})
+        while True:
+            await ch.recv()
+
+    monkeypatch.setattr(core_mod, "open_tcp", slow_open)
+    async with RawPhone(unpaired, handshake_delay=0.5) as phone:
+        daemon = await make_daemon(connect_timeout=0.3)
+        api = await api_for(daemon)
+        assert (await api.call("devices.connect", {"host": "127.0.0.1", "port": phone.port}))["id"] == phone.id
 
 
 async def test_impostor_with_wrong_id_at_remembered_address_is_rejected(make_daemon, short_tmp, api_for):

@@ -27,6 +27,9 @@ SENT_THEN_LOST = "connection lost after the action was sent; it may have been ap
 NO_RESPONSE = "phone did not respond; it may still be applied"
 # A probe also passes if data is still arriving at its deadline (a large frame, a burst of art).
 PROBE_FLOWING = 1.0
+# Probe deadlines grow by this many round-trip times: on a slow, lossy link TCP needs a few of them to
+# recover a lost segment (spec 5).
+PROBE_RTTS = 4
 ART_MIMES = ("image/png", "image/jpeg")
 # Bounds on the one image a session reassembles from `art` parts (spec 5.3).
 ART_MAX_PARTS = 256
@@ -159,6 +162,9 @@ class Session:
         self.suspect = False
         self._req = 0
         self._ping_req = 0
+        # Smoothed round-trip time (seeded by the handshake, then pongs) and the last ping (req, sent at).
+        self.rtt = 0.0
+        self._ping_sent: tuple[int, float] | None = None
         self._pending: dict[int, asyncio.Future] = {}
         # The image being reassembled from parts: key, mime, part count, bytes so far, parts so far.
         self._art: tuple[str, str, int, bytearray, int] | None = None
@@ -271,7 +277,8 @@ class Session:
         """
         if self.closed.is_set():
             return
-        self._probes.append((time.monotonic() + timeout, reason, self._ping_req + 1, action or self._req + 1))
+        deadline = time.monotonic() + timeout + PROBE_RTTS * self.rtt
+        self._probes.append((deadline, reason, self._ping_req + 1, action or self._req + 1))
         if ping:
             self._spawn(self._ping())
         if hold_actions and not self.suspect:
@@ -310,6 +317,7 @@ class Session:
 
     async def _ping(self) -> None:
         self._ping_req += 1
+        self._ping_sent = (self._ping_req, time.monotonic())
         with contextlib.suppress(LinkDown, ConnectionError, OSError):
             await self.send({"t": "ping", "req": self._ping_req})
 
@@ -507,6 +515,8 @@ class Session:
             case "ping":
                 await self.send({"t": "pong", "req": msg.get("req")})
             case "pong":
+                if self._ping_sent and msg.get("req") == self._ping_sent[0]:
+                    self.rtt += (time.monotonic() - self._ping_sent[1] - self.rtt) / 8
                 self._answered(ping=msg.get("req"))
             case "bye":
                 self.close_reason = f"phone said bye ({msg.get('reason') or 'no reason'})"

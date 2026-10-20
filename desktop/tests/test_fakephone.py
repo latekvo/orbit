@@ -428,6 +428,28 @@ async def test_keepalive_ping_and_dead_peer(make_phone):
     assert "silent" in ev["reason"] and phone.sessions == []
 
 
+async def test_a_frame_still_arriving_keeps_the_session_alive(make_phone):
+    phone = await make_phone(keepalive=10, dead_after=0.5)
+    laptop = await Laptop().connect(phone)
+    laptop.writer.write(struct.pack(">I", 4000))  # a frame trickling in at a byte per 0.2 s
+    for _ in range(8):
+        await asyncio.sleep(0.2)
+        laptop.writer.write(b"\x00")
+    assert phone.sessions and not phone.sessions[0].closed
+
+
+async def test_action_read_after_the_silence_deadline_is_not_applied(make_phone):
+    """Bytes that waited past dead_after (the process was stopped) are not handled: the peer gave up."""
+    phone = await make_phone(keepalive=10, dead_after=0.5)
+    laptop = Laptop()
+    await pair(phone, laptop)
+    await laptop.send({"t": "action", "req": 1, "activity": "media:com.example.music", "action": "media.pause"})
+    time.sleep(0.7)  # noqa: ASYNC251 - the phone's event loop stalls with the action unread
+    ev = await phone.wait_event("session_closed")
+    assert "silent" in ev["reason"]
+    assert phone.media.state == "playing"
+
+
 async def test_freeze_stops_all_traffic(make_phone):
     phone = await make_phone(keepalive=0.1, dead_after=0.3)
     laptop = Laptop()

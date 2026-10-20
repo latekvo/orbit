@@ -10,11 +10,13 @@ from orbit.store import PeerStore, PinnedPeer
 class RawPhone:
     """Minimal scripted responder over real TCP for protocol edge cases.
 
-    ``script(channel)`` runs after the handshake of every accepted connection.
+    ``script(channel)`` runs after the handshake of every accepted connection, which waits
+    ``handshake_delay`` seconds first (a slow link's round trip).
     """
 
-    def __init__(self, script, identity=None, name="Raw Phone"):
+    def __init__(self, script, identity=None, name="Raw Phone", handshake_delay=0.0):
         self.identity = identity or KeyPair.generate()
+        self.handshake_delay = handshake_delay
         self.name = name
         self.script = script
         self.port = 0
@@ -47,6 +49,7 @@ class RawPhone:
 
     async def _run(self, stream):
         try:
+            await asyncio.sleep(self.handshake_delay)
             channel = await respond(stream, self.identity, self.name, "android")
             self.results.append(await self.script(channel))
         except Exception as e:  # recorded for assertions

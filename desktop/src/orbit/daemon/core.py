@@ -26,7 +26,7 @@ from ..paths import ensure_private_dir
 from ..proto import FrameStream, ProtocolError, device_id, initiate
 from ..store import PeerStore, PinnedPeer, load_or_create_identity
 from .api import AlreadyRunning
-from .session import NO_RESPONSE, ActionNotSent, Session, WatchedReader, WatchedWriter
+from .session import NO_RESPONSE, PROBE_RTTS, ActionNotSent, Session, WatchedReader, WatchedWriter
 from .timeconv import shift_local, to_local
 
 log = logging.getLogger(__name__)
@@ -908,6 +908,7 @@ class Daemon:
         return opening.result()
 
     async def _connect_route(self, route: Route, *, explicit: bool, moved: asyncio.Event | None = None) -> Session:
+        opened = time.monotonic()
         try:
             stream = await self._open(route, moved)
         except ApiError:
@@ -918,10 +919,12 @@ class Daemon:
             raise ApiError("failed", f"cannot connect to {route.address}: {e}") from None
         stream = FrameStream(WatchedReader(stream.reader), WatchedWriter(stream.writer))
         session = None
+        timeout = self.connect_timeout
+        if route.kind == "lan":  # a TCP connect takes a round trip: allow for slow links as probes do
+            timeout += PROBE_RTTS * (time.monotonic() - opened)
         try:
-            channel = await asyncio.wait_for(
-                initiate(stream, self.identity, self.name, self.platform), self.connect_timeout
-            )
+            started = time.monotonic()
+            channel = await asyncio.wait_for(initiate(stream, self.identity, self.name, self.platform), timeout)
             peer = channel.peer
             if route.expected and peer.id != route.expected:
                 self._identity_mismatch(route, peer.id, peer.name)
@@ -929,10 +932,11 @@ class Daemon:
             if route.prefix and not peer.id.startswith(route.prefix):
                 raise ApiError("failed", f"{route.address} is device {peer.id}, not the advertised {route.prefix}")
             session = Session(self, channel, route.kind, route.address, route.manual)
+            session.rtt = time.monotonic() - started  # commit -> hello
             session.local_paired = self.store.is_pinned(peer.id, peer.static)
             known = self.devices.get(peer.id)
             art = list(known.art)[-ART_MAX_ENTRIES:] if known and session.local_paired else []
-            await session.exchange_ready(self.connect_timeout, art)
+            await session.exchange_ready(timeout, art)
             if known:
                 known.art_kept = set(art)
             # Shielded: an attempt cancelled because another route won must not leave adoption half done.
@@ -943,7 +947,7 @@ class Daemon:
             what = "the Orbit handshake" if session is None else "the phone's ready message"
             raise ApiError(
                 "timeout",
-                f"{route.address} accepted the connection but {what} did not arrive within {self.connect_timeout:g} s",
+                f"{route.address} accepted the connection but {what} did not arrive within {timeout:.3g} s",
             ) from None
         except asyncio.IncompleteReadError:
             raise ApiError("failed", f"{route.address} closed the connection during the handshake") from None

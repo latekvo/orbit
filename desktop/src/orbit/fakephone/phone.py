@@ -69,6 +69,23 @@ class Session:
         self._pair_timer: asyncio.TimerHandle | None = None
         self._unpaired_timer: asyncio.TimerHandle | None = None
         self._prompt_task: asyncio.Task[None] | None = None
+        self._count_received_bytes(channel.stream.reader)
+
+    def _count_received_bytes(self, reader: asyncio.StreamReader) -> None:
+        """Any byte counts as receiving (spec 5); bytes that arrive past the deadline end the session
+        unhandled (they waited while this process was stopped, and the peer gave up on them)."""
+        feed = reader.feed_data
+
+        def received(data: bytes) -> None:
+            if data and not self.closed:
+                now = self._loop.time()
+                if now - self._last_recv >= self.phone.dead_after and not self.phone.frozen:
+                    self.close(f"peer silent for {self.phone.dead_after:g}s", flush=False)
+                    return
+                self._last_recv = now
+            feed(data)
+
+        reader.feed_data = received  # type: ignore[method-assign]
 
     def __repr__(self) -> str:
         return f"<Session {self.id} {self.peer.name!r} paired={self.paired} closed={self.closed}>"
@@ -135,7 +152,6 @@ class Session:
                 msg = await self.channel.recv()
                 if self.phone.frozen:
                     await asyncio.Future()  # hung: never read again; cancelled when the session closes
-                self._last_recv = self._loop.time()
                 self.phone.log.debug("<- %s %s", self.id, _summary(msg))
                 self._dispatch(msg)
         except asyncio.IncompleteReadError:
