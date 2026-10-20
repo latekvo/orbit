@@ -1,6 +1,7 @@
 package dev.orbit.companion
 
 import android.content.Context
+import android.os.SystemClock
 import dev.orbit.protocol.ActivityHub
 import dev.orbit.protocol.ActivityPublisher
 import dev.orbit.protocol.ByteStream
@@ -106,7 +107,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
      * [address] counts against the unpaired-session limits; beyond them the oldest unpaired one closes.
      */
     fun startSession(stream: ByteStream, transport: String, address: String? = null) {
-        val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler)
+        val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler, elapsed = SystemClock::elapsedRealtime)
         address?.let { unauthenticated.admit(session.id, it) }?.let { evicted ->
             EventLog.log("closing unpaired session $evicted for one from $address: too many unpaired sessions")
             sessions[evicted]?.shutdown("too many unpaired sessions")

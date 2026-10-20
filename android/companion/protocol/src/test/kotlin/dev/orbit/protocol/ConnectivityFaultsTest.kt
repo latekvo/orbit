@@ -16,6 +16,8 @@ import java.util.concurrent.ScheduledThreadPoolExecutor
 import java.util.concurrent.atomic.AtomicLong
 
 /** Link faults seen from the responder: a frozen process, a frame still trickling in, a non-reading peer. */
+private fun realMs() = System.nanoTime() / 1_000_000
+
 class ConnectivityFaultsTest {
     private val scheduler = ScheduledThreadPoolExecutor(2)
     private val threads = Executors.newCachedThreadPool()
@@ -54,12 +56,13 @@ class ConnectivityFaultsTest {
         }
     }
 
-    private fun pairedSession(timeouts: SessionTimeouts): Pair<ResponderSession, Client> {
+    /** [now] is the wall clock; [elapsed] defaults to real time (a test that "freezes" passes now::get). */
+    private fun pairedSession(timeouts: SessionTimeouts, elapsed: () -> Long = ::realMs): Pair<ResponderSession, Client> {
         host.pins[deviceId(laptop.public)] = Peer(deviceId(laptop.public), "Laptop", "linux", laptop.public)
         val created = ArrayBlockingQueue<ResponderSession>(1)
         threads.execute {
             val sock = server.accept()
-            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, clock = now::get, timeouts = timeouts)
+            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, clock = now::get, timeouts = timeouts, elapsed = elapsed)
             created.put(s)
             s.run()
         }
@@ -77,11 +80,11 @@ class ConnectivityFaultsTest {
     }
 
     /** A session after the handshake and both `ready`s, with the laptop not pinned. */
-    private fun unpairedSession(timeouts: SessionTimeouts): Pair<ResponderSession, Client> {
+    private fun unpairedSession(timeouts: SessionTimeouts, elapsed: () -> Long = ::realMs): Pair<ResponderSession, Client> {
         val created = ArrayBlockingQueue<ResponderSession>(1)
         threads.execute {
             val sock = server.accept()
-            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, clock = now::get, timeouts = timeouts)
+            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, clock = now::get, timeouts = timeouts, elapsed = elapsed)
             created.put(s)
             s.run()
         }
@@ -116,7 +119,7 @@ class ConnectivityFaultsTest {
     fun actionReadAfterTheIdleDeadlineIsNotExecuted() {
         hub.upsert(media)
         // Ticks never fire during the test: the deadline passes while the process is "frozen".
-        val (session, c) = pairedSession(SessionTimeouts(tickMs = 3_600_000))
+        val (session, c) = pairedSession(SessionTimeouts(tickMs = 3_600_000), elapsed = now::get)
         now.addAndGet(45_000)
         c.ch.send(json("""{"t":"action","req":7,"activity":"media:x","action":"media.pause"}"""))
         Thread.sleep(500)
@@ -127,7 +130,7 @@ class ConnectivityFaultsTest {
     /** Same freeze during pairing: the laptop's acceptance arrives after the pairing deadline. */
     @Test
     fun pairDecisionReadAfterThePairingDeadlineDoesNotPair() {
-        val (session, c) = unpairedSession(SessionTimeouts(tickMs = 3_600_000, pairingMs = 40_000))
+        val (session, c) = unpairedSession(SessionTimeouts(tickMs = 3_600_000, pairingMs = 40_000), elapsed = now::get)
         c.ch.send(json("""{"t":"pair_request"}"""))
         waitFor("pairing") { session.state == ResponderSession.State.PAIRING }
         session.decidePairing(true)
@@ -145,17 +148,42 @@ class ConnectivityFaultsTest {
     /** The unpaired deadline closes a live session: the initiator is told why before the close. */
     @Test
     fun unpairedTimeoutSaysByeWithAReason() {
-        val (session, c) = unpairedSession(SessionTimeouts(tickMs = 20, unpairedMs = 1_000, pingAfterMs = 3_600_000))
+        val (session, c) = unpairedSession(SessionTimeouts(tickMs = 20, unpairedMs = 1_000, pingAfterMs = 3_600_000), elapsed = now::get)
         now.addAndGet(1_000)
         assertEquals(json("""{"t":"bye","reason":"not paired"}"""), c.recvType("bye"))
         waitFor("close") { session.state == ResponderSession.State.CLOSED }
         assertEquals("unpaired timeout", session.closeReason)
     }
 
+    /**
+     * The phone's wall clock steps back (automatic time sync, the user setting the time) while the
+     * laptop is gone without a FIN (Wi-Fi dropped): the session must still notice the silence.
+     */
+    @Test
+    fun wallClockSteppingBackDoesNotKeepADeadPeersSessionOpen() {
+        val (session, c) = pairedSession(SessionTimeouts(tickMs = 20, idleMs = 1_000))
+        now.addAndGet(-3_600_000)
+        Thread.sleep(2_500) // the laptop sends nothing
+        assertEquals("session open ${session.state} after 2.5 s of silence (idle deadline 1 s)", ResponderSession.State.CLOSED, session.state)
+        assertEquals("idle timeout", session.closeReason)
+        c.socket.close()
+    }
+
+    /** The wall clock steps forward: a healthy session must not be taken for idle. */
+    @Test
+    fun wallClockSteppingForwardKeepsALiveSession() {
+        val (session, c) = pairedSession(SessionTimeouts(tickMs = 20))
+        now.addAndGet(3_600_000)
+        Thread.sleep(300)
+        assertEquals("closed: ${session.closeReason}", ResponderSession.State.PAIRED, session.state)
+        c.ch.send(json("""{"t":"ping","req":9}"""))
+        assertEquals("pong", c.recvType("pong").type)
+    }
+
     /** spec 5: "any byte counts, so a large frame still arriving keeps the session alive". */
     @Test
     fun bytesOfAFrameStillArrivingKeepTheSessionAlive() {
-        val (session, c) = pairedSession(SessionTimeouts(tickMs = 20, pingAfterMs = 3_600_000))
+        val (session, c) = pairedSession(SessionTimeouts(tickMs = 20, pingAfterMs = 3_600_000), elapsed = now::get)
         c.frames.capture = true
         c.ch.send(json("""{"t":"ping","req":1,"pad":"${"x".repeat(200)}"}"""))
         c.frames.capture = false

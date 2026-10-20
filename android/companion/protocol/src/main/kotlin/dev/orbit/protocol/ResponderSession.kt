@@ -57,8 +57,15 @@ class ResponderSession(
     private val hub: ActivityHub,
     private val host: SessionHost,
     private val scheduler: ScheduledExecutorService,
+    /** Wall-clock epoch ms, for the `now` fields. */
     private val clock: () -> Long = System::currentTimeMillis,
     private val timeouts: SessionTimeouts = SessionTimeouts(),
+    /**
+     * Monotonic ms for deadlines and keepalive, unaffected by wall-clock steps. It must keep counting
+     * while the device sleeps (Android: SystemClock.elapsedRealtime), or a frozen process misses
+     * its deadlines on resume.
+     */
+    private val elapsed: () -> Long = { System.nanoTime() / 1_000_000 },
     private val handshake: (FrameStream) -> SecureChannel = { Handshake.respond(it, identity, name, platform) },
 ) {
     enum class State { HANDSHAKE, UNPAIRED, PAIRING, PAIRED, CLOSED }
@@ -90,7 +97,7 @@ class ResponderSession(
 
     private var localPinned = false
     private var remoteReady: Boolean? = null
-    private val startedAt = clock()
+    private val startedAt = elapsed()
     private var pairingStartedAt = 0L
     private var establishedAt = 0L
     @Volatile private var lastRecv = startedAt
@@ -129,7 +136,7 @@ class ResponderSession(
                 peer = ch.peer
                 sas = ch.sas
                 localPinned = host.isPinned(ch.peer)
-                establishedAt = clock()
+                establishedAt = elapsed()
                 state = State.UNPAIRED
             }
             host.sessionChanged(this)
@@ -185,7 +192,7 @@ class ResponderSession(
         synchronized(lock) {
             if (state != State.UNPAIRED) return
             state = State.PAIRING
-            pairingStartedAt = clock()
+            pairingStartedAt = elapsed()
         }
         host.sessionChanged(this)
     }
@@ -216,7 +223,7 @@ class ResponderSession(
             if (state == State.UNPAIRED) {
                 // A decision without a prior pair_request still starts the prompt.
                 state = State.PAIRING
-                pairingStartedAt = clock()
+                pairingStartedAt = elapsed()
             }
             if (state != State.PAIRING) return
             remoteDecision = true
@@ -293,7 +300,7 @@ class ResponderSession(
     }
 
     private fun tick() {
-        val now = clock()
+        val now = elapsed()
         if (state == State.CLOSED || expire(now)) return
         if (state != State.HANDSHAKE && now - lastSent >= timeouts.pingAfterMs) {
             lastSent = now // avoid queueing a ping per tick while a slow link drains
@@ -303,7 +310,7 @@ class ResponderSession(
 
     /** Reader thread: bytes arrived. */
     private fun received() {
-        val now = clock()
+        val now = elapsed()
         if (expire(now)) throw IOException(closeReason)
         lastRecv = now
     }
@@ -350,7 +357,7 @@ class ResponderSession(
     private fun send(msg: JsonObject) {
         val ch = channel ?: return
         ch.send(msg)
-        lastSent = clock()
+        lastSent = elapsed()
     }
 
     private fun sendActivity(activity: JsonObject) {
