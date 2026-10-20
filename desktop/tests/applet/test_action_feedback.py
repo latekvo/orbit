@@ -10,8 +10,8 @@ from orbit.applet import icons
 from orbit.applet.panel import Panel
 from orbit.applet.theme import LIGHT
 
-# Real timeouts divided by this, so a 13 s phone round trip takes 260 ms.
-SCALE = 50
+# Real timeouts divided by this, so a 13 s phone round trip takes 1.3 s.
+SCALE = 10
 
 
 def make_panel(qtbot, client):
