@@ -162,7 +162,8 @@ class Session:
         self.suspect = False
         self._req = 0
         self._ping_req = 0
-        # Smoothed round-trip time (seeded by the handshake, then pongs) and the last ping (req, sent at).
+        # Round-trip time, seeded by the handshake: a longer pong takes over at once, a shorter one
+        # pulls it down slowly. And the last ping (req, sent at).
         self.rtt = 0.0
         self._ping_sent: tuple[int, float] | None = None
         self._pending: dict[int, asyncio.Future] = {}
@@ -516,7 +517,8 @@ class Session:
                 await self.send({"t": "pong", "req": msg.get("req")})
             case "pong":
                 if self._ping_sent and msg.get("req") == self._ping_sent[0]:
-                    self.rtt += (time.monotonic() - self._ping_sent[1] - self.rtt) / 8
+                    sample = time.monotonic() - self._ping_sent[1]
+                    self.rtt = max(sample, self.rtt + (sample - self.rtt) / 8)
                 self._answered(ping=msg.get("req"))
             case "bye":
                 self.close_reason = f"phone said bye ({msg.get('reason') or 'no reason'})"

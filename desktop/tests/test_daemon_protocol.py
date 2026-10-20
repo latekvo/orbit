@@ -112,6 +112,41 @@ async def test_ping_deadline_allows_for_the_round_trip_time(make_daemon, short_t
         assert len(pongs) >= 3
 
 
+async def test_probe_deadline_follows_a_link_that_turned_slow_at_once(make_daemon, short_tmp, api_for, monkeypatch):
+    """The handshake saw a fast link; one pong taking 0.25 s is enough to stretch a 0.1 s action probe."""
+    monkeypatch.setattr(session_mod, "PROBE_FLOWING", 0.05)
+    delay = 0.25
+    pongs = []
+
+    async def turned_slow(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+        await ch.recv()
+        act = {"id": "x", "kind": "generic", "title": "X", "actions": [{"id": "go", "label": "Go"}]}
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [act]})
+
+        async def answer(msg):
+            if msg["t"] == "ping":
+                await asyncio.sleep(delay)
+                await ch.send({"t": "pong", "req": msg["req"]})
+                pongs.append(msg["req"])
+            elif msg["t"] == "action":
+                await asyncio.sleep(2 * delay)
+                await ch.send({"t": "action_result", "req": msg["req"], "ok": True})
+
+        while True:
+            asyncio.ensure_future(answer(await ch.recv()))
+
+    async with RawPhone(turned_slow) as phone:
+        daemon = await connect_pinned(
+            make_daemon, short_tmp, phone, keepalive=0.5, stall_after=10, dead_after=10, action_probe=0.1
+        )
+        api = await api_for(daemon)
+        await until(lambda: pongs)
+        assert await api.call("activities.action", {"device": phone.id, "activity": "x", "action": "go"}) == {
+            "ok": True
+        }
+
+
 async def test_handshake_deadline_allows_for_a_slow_tcp_connect(make_daemon, api_for, monkeypatch):
     """A TCP connect that took 0.2 s (a round trip) stretches the 0.3 s handshake deadline to 1.1 s."""
     real_open = core_mod.open_tcp
