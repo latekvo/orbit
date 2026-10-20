@@ -11,6 +11,7 @@ rows, pairing dialogs, tray tooltip, menu head) is diffed and appended to OUTDIR
     click ACTIVITY ACTION  press an action button on a card
     devbtn DEVICE TEXT     press a device-row button (Connect, Disconnect, Forget, Pair)
     accept | reject        answer the first pairing dialog
+    retry                  press "Try again" on the first failed pairing dialog
     quit
 """
 
@@ -73,12 +74,14 @@ def main() -> int:
             })
         rows = []
         for did, r in p.devices_page._rows.items():
-            rows.append({"id": did[:8], "status": r.status.fullText(),
+            rows.append({"id": did[:8], "status": r.status.fullText(), "error": getattr(r, "error", None),
                          "buttons": {k: (b.text(), b.isEnabled()) for k, b in r.buttons.items() if _alive(b)}})
         msg = p.devices_page.message
         tray._rebuild_menu()
         dialogs = [{"headline": d.headline.text(), "state": d.state.text(), "accept": d.accept_btn.isEnabled()}
                    for d in tray.pairing.dialogs.values()]
+        failed = [{"headline": d.headline.text(), "hint": d.hint.text(), "retry": d.accept_btn.isEnabled()}
+                  for d in getattr(tray.pairing, "failed", []) if _alive(d) and d.isVisible()]
         return {
             "connected": client.connected,
             "header": p.status.fullText(),
@@ -89,6 +92,9 @@ def main() -> int:
             "tooltip": tray.tray.toolTip(),
             "menuHead": tray.menu.actions()[0].text() if tray.menu.actions() else None,
             "dialogs": dialogs,
+            "failedDialogs": failed,
+            "bluetoothNotice": p.devices_page.bluetooth.text() if hasattr(p.devices_page, "bluetooth")
+            and not p.devices_page.bluetooth.isHidden() else None,
         }
 
     def poll() -> None:
@@ -137,6 +143,10 @@ def main() -> int:
             for did, r in p.devices_page._rows.items():
                 if did.startswith(cmd[1]) and cmd[2] in r.buttons:
                     r.buttons[cmd[2]].click()
+        elif cmd[0] == "retry":
+            for d in getattr(tray.pairing, "failed", []):
+                d.accept_btn.click()
+                break
         elif cmd[0] in ("accept", "reject"):
             for d in tray.pairing.dialogs.values():
                 d.respond(cmd[0] == "accept")

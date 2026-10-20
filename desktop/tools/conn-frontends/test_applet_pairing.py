@@ -45,6 +45,12 @@ async def test_pairing_dialog_when_link_drops(world):
             rows=cur["rows"], devices_message=cur["devicesMessage"], waiting_state=s["dialogs"][0]["state"])
     # The user accepted and is waiting; the attempt failed. Something must say so.
     assert cur["devicesMessage"] or any("fail" in str(x).lower() for x in cur.values())
+    assert [d["headline"] for d in cur["failedDialogs"]] == ["Pairing with Test Phone failed"]
+    assert "connection was lost" in cur["failedDialogs"][0]["hint"]
+    # "Try again" starts a new pairing session, shown in a fresh dialog
+    a.cmd("retry")
+    s = await a.until(lambda s: s["dialogs"] and not s["failedDialogs"], 15)
+    measure("pairing_link_drop_retry", dialog=s["dialogs"][0])
 
 
 async def test_connect_button_while_phone_unreachable(paired):
@@ -57,12 +63,12 @@ async def test_connect_button_while_phone_unreachable(paired):
     a.cmd("devices")
     t = time.monotonic()
     a.cmd(f"devbtn {w.phone_id[:8]} Connect")
-    s = await a.until(lambda s: s["devicesMessage"], 20)
+    s = await a.until(lambda s: s["devicesMessage"] or (s["rows"] and s["rows"][0].get("error")), 20)
     busy = a.first(lambda s: s["rows"] and s["rows"][0]["buttons"].get("Connect", ["", True])[1] is False, t) or s
     await a.shot("connect-unreachable")
     measure("connect_unreachable", busy_label=busy["rows"][0]["buttons"]["Connect"][0],
-            message=s["devicesMessage"], after=round(s["m"] - t, 2))
-    message = s["devicesMessage"]
+            message=s["devicesMessage"], row_error=s["rows"][0].get("error"), after=round(s["m"] - t, 2))
+    message = s["devicesMessage"] or s["rows"][0]["error"]
     # then the phone comes back; the user clicks Connect once more
     await w.proxy.listen()
     t = time.monotonic()
@@ -70,6 +76,7 @@ async def test_connect_button_while_phone_unreachable(paired):
     s2 = await a.until(lambda s: s["cards"] and not s["cards"][0]["stale"], 20)
     measure("connect_after_back", after=round(s2["m"] - t, 2), header=s2["header"])
     assert "Errno" not in message, f"raw Python exception text shown to the user: {message!r}"
+    assert (s["rows"][0].get("error"), s["devicesMessage"]) == ("Test Phone isn't reachable", None)
 
 
 async def test_disconnect_while_reconnecting(paired):
@@ -108,4 +115,6 @@ async def test_daemon_restart_during_pairing(world):
     cur = a.now()
     task.cancel()
     measure("pairing_daemon_restart", dialogs=cur["dialogs"], rows=cur["rows"], msg=cur["devicesMessage"],
-            header=cur["header"])
+            header=cur["header"], failed=cur["failedDialogs"])
+    assert [(d["headline"], d["hint"], d["retry"]) for d in cur["failedDialogs"]] == [
+        ("Pairing with Test Phone failed", "orbitd stopped before pairing finished.", True)]

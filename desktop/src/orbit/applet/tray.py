@@ -12,7 +12,7 @@ from PySide6.QtWidgets import QApplication, QMenu, QSystemTrayIcon
 
 from . import icons
 from .client import DaemonClient
-from .model import device_state, devices_summary
+from .model import bluetooth_problem, device_state, devices_summary
 from .pairing import PairingManager
 from .panel import Panel, compute_panel_position
 from .theme import Theme
@@ -41,20 +41,21 @@ class TrayController(QObject):
         self.pairing = PairingManager(client, theme)
         self.pairing.pairingStarted.connect(self._on_pairing_started)
         self.pairing.pairingFinished.connect(self._on_pairing_finished)
+        self.pairing.pairingFailed.connect(self._on_pairing_failed)
 
         self.menu = QMenu()
         self.menu.aboutToShow.connect(self._rebuild_menu)
         self._rebuild_menu()
 
         self.tray = QSystemTrayIcon(tray_icon(theme))
-        self.tray.setToolTip("Orbit")
         self.tray.activated.connect(self._on_activated)
         if sys.platform != "darwin":
             # StatusNotifierItem hosts show this on secondary click. On macOS a context menu
             # would hijack the primary click, so it is popped up manually on Context instead.
             self.tray.setContextMenu(self.menu)
-        client.connectedChanged.connect(self._update_tooltip)
-        client.devicesChanged.connect(self._update_tooltip)
+        for sig in (client.connectedChanged, client.responsiveChanged, client.devicesChanged, client.statusChanged):
+            sig.connect(self._update_tooltip)
+        self._update_tooltip()
 
     def show(self) -> None:
         self.tray.show()
@@ -93,10 +94,15 @@ class TrayController(QObject):
             self.menu.popup(QCursor.pos())
 
     def _update_tooltip(self, *_) -> None:
-        if not self.client.connected:
+        c = self.client
+        if not c.connected:
             self.tray.setToolTip("Orbit - orbitd not running")
             return
-        self.tray.setToolTip("Orbit - " + devices_summary(self.client.devices))
+        if not c.responsive:
+            self.tray.setToolTip("Orbit - orbitd isn't responding")
+            return
+        ble = bluetooth_problem(c.status)
+        self.tray.setToolTip("Orbit - " + devices_summary(c.devices) + (f"\n{ble[0]}" if ble else ""))
 
     def toggle_panel(self) -> None:
         if self.panel.isVisible():
@@ -135,13 +141,15 @@ class TrayController(QObject):
         m = self.menu
         m.clear()
         c = self.client
-        status = (
-            f"orbitd {c.status.get('version', '')} - connected".replace("  ", " ")
-            if c.connected
-            else "orbitd not running"
-        )
+        if not c.connected:
+            status = "orbitd not running"
+        else:
+            state = "connected" if c.responsive else "not responding"
+            status = f"orbitd {c.status.get('version', '')} - {state}".replace("  ", " ")
         head = m.addAction(status)
         head.setEnabled(False)
+        if c.connected and (ble := bluetooth_problem(c.status)):
+            m.addAction(ble[0]).setEnabled(False)
         m.addAction("Show activities", self.show_panel)
         m.addSeparator()
         devices = m.addMenu("Devices")
@@ -179,6 +187,12 @@ class TrayController(QObject):
             self.tray.showMessage(
                 "Orbit", f"Paired with {dev.get('name') or 'your phone'}", QSystemTrayIcon.MessageIcon.Information, 4000
             )
+
+    def _on_pairing_failed(self, pairing: dict, reason: str) -> None:
+        name = pairing.get("name") or "your phone"
+        self.panel.devices_page.show_message(f"Pairing with {name} failed: {reason}", error=True)
+        if self.tray.isVisible() and QSystemTrayIcon.supportsMessages():
+            self.tray.showMessage("Orbit", f"Pairing with {name} failed", QSystemTrayIcon.MessageIcon.Warning, 4000)
 
 
 def _rect(r: QRect) -> str:
