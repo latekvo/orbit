@@ -19,6 +19,7 @@ from zeroconf import (
     RecordUpdateListener,
     ServiceStateChange,
     Zeroconf,
+    current_time_millis,
 )
 from zeroconf.asyncio import AsyncServiceBrowser, AsyncServiceInfo, AsyncZeroconf
 from zeroconf.const import _CLASS_IN, _FLAGS_QR_QUERY, _TYPE_A, _TYPE_AAAA, _TYPE_PTR, _TYPE_SRV, _TYPE_TXT
@@ -93,6 +94,7 @@ class LanDiscovery:
         # Lower-cased instance name -> (instance name, SRV target host) of resolved instances.
         self._known: dict[str, tuple[str, str]] = {}
         self._seen_at: dict[str, float] = {}
+        self._missing: set[str] = set()  # resolved instances without a live SRV record at the last check
         self._interfaces: frozenset[tuple[str, str]] = frozenset()
         self._last_query = 0.0
         self._listener = _Seen(self)
@@ -106,7 +108,7 @@ class LanDiscovery:
             except OSError as e:
                 if MDNS_IP_VERSION is IPVersion.V4Only:
                     raise
-                log.info("mDNS over IPv6 unavailable (%s); using IPv4 only", e)
+                log.info("dual-stack mDNS unavailable (%s); trying IPv4 only", e)
                 self._azc = AsyncZeroconf(ip_version=IPVersion.V4Only)
         except Exception as e:
             log.warning("mDNS discovery unavailable (will retry): %s", e)
@@ -171,16 +173,23 @@ class LanDiscovery:
                 self.refresh(wanted)
 
     def _expire(self) -> None:
-        """Forget instances whose SRV record expired: a phone killed without a goodbye is gone."""
+        """Forget instances whose SRV record expired (two checks in a row): a phone killed without a
+        goodbye is gone."""
         assert self._azc is not None
         cache = self._azc.zeroconf.cache
-        now = time.time() * 1000
+        now = current_time_millis()
+        missing = set()
         for key, (instance, _host) in list(self._known.items()):
             records = cache.async_all_by_details(instance, _TYPE_SRV, _CLASS_IN)
-            if not any(not r.is_expired(now) for r in records):
-                log.info("mDNS records of %s expired", instance)
-                del self._known[key]
-                self._on_change(instance, None)
+            if any(not r.is_expired(now) for r in records):
+                continue
+            if key not in self._missing:
+                missing.add(key)
+                continue
+            log.info("mDNS records of %s expired", instance)
+            del self._known[key]
+            self._on_change(instance, None)
+        self._missing = missing
 
     def _record(self, record: Any) -> None:
         name = record.name.lower()
@@ -192,6 +201,20 @@ class LanDiscovery:
             if now - self._seen_at.get(instance, 0.0) >= 1.0:
                 self._seen_at[instance] = now
                 self._on_seen(instance)
+
+    def _scoped(self, addresses: list[str]) -> list[str]:
+        """A link-local IPv6 address needs its interface. A record that came over IPv4 does not say
+        which one, so each interface with a link-local address of its own is a candidate."""
+        links = sorted(
+            {name for name, host in self._interfaces if host.lower().startswith("fe80:") and not name.startswith("lo")}
+        )
+        out = []
+        for a in addresses:
+            if a.lower().startswith("fe80:") and "%" not in a:
+                out += [f"{a}%{name}" for name in links]
+            else:
+                out.append(a)
+        return out
 
     def _on_state(self, zeroconf: Zeroconf, service_type: str, name: str, state_change: ServiceStateChange) -> None:
         if state_change is ServiceStateChange.Removed:
@@ -218,7 +241,7 @@ class LanDiscovery:
                 VERSION,
             )
             return
-        addrs = sorted(info.parsed_scoped_addresses(IPVersion.All), key=address_order)
+        addrs = sorted(self._scoped(info.parsed_scoped_addresses(IPVersion.All)), key=address_order)
         if not addrs:
             return
         if info.server:

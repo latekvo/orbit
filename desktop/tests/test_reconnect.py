@@ -1,6 +1,7 @@
 """Reconnection policy and route choice against real TCP phones (spec/LOCAL_API.md, Connecting)."""
 
 import asyncio
+import socket
 import time
 
 import pytest
@@ -9,7 +10,7 @@ from daemon_helpers import RawPhone, pin_in, until
 from orbit.client import ApiError
 from orbit.daemon import core
 from orbit.daemon.timeconv import now_ms
-from orbit.proto import KeyPair
+from orbit.proto import KeyPair, device_id
 from orbit.store import PeerStore
 
 ACT = {
@@ -27,6 +28,7 @@ class Phone(RawPhone):
     def __init__(self, identity=None, **kw):
         self.drops = asyncio.Event()
         self.actions = []
+        self.silent: bool | str = False  # reads, but sends nothing (frozen app, kernel still acknowledging)
         super().__init__(self._script, identity=identity, **kw)
 
     async def _script(self, ch):
@@ -42,6 +44,11 @@ class Phone(RawPhone):
     async def _serve(self, ch):
         while True:
             msg = await ch.recv()
+            if self.silent == "after one frame":  # e.g. an update it sent as the link died
+                self.silent = True
+                await ch.send({"t": "activity", "activity": ACT})
+            if self.silent:
+                continue
             if msg["t"] == "ping":
                 await ch.send({"t": "pong", "req": msg["req"]})
             elif msg["t"] == "action":
@@ -314,3 +321,90 @@ def test_txt_version_lists_are_understood():
 
     assert supported_version("1") and supported_version("1,2") and supported_version(" 2, 1")
     assert not supported_version("2") and not supported_version(None) and not supported_version("")
+
+
+async def test_old_pin_of_a_phone_paired_again_is_dropped(make_daemon, short_tmp, api_for):
+    """Reset phone, paired again under its new identity: its old address answers as the new pin."""
+
+    async def again(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+        await asyncio.sleep(30)
+
+    async with RawPhone(again, name="Pixel") as phone:
+        old = KeyPair.generate()
+        pin_in(short_tmp / "daemon", old, name="Pixel", address=f"127.0.0.1:{phone.port}")
+        pin_in(short_tmp / "daemon", phone.identity, name="Pixel")
+        daemon = await make_daemon()
+        api = await api_for(daemon)
+        await until(lambda: _ids(api, {phone.id}))
+        assert PeerStore(short_tmp / "daemon").get(device_id(old.public)) is None
+
+
+async def _ids(api, expected):
+    return {d["id"] for d in await api.call("devices.list")} == expected
+
+
+async def test_bytes_the_kernel_holds_may_have_reached_the_phone():
+    """Unacknowledged is not undelivered: the phone may have the bytes and only its ACKs were lost."""
+    from orbit.daemon.session import WatchedWriter
+
+    listener = socket.socket()
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
+    listener.bind(("127.0.0.1", 0))
+    held = []
+    server = await asyncio.start_server(lambda r, w: held.append(w), sock=listener)  # never reads
+    sock = socket.socket()
+    sock.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 65536)
+    sock.connect(listener.getsockname())
+    _, writer = await asyncio.open_connection(sock=sock)
+    try:
+        tx = WatchedWriter(writer)
+        tx.write(b"x" * 1_000_000)
+        await asyncio.sleep(0.2)
+        buffered = writer.transport.get_write_buffer_size()
+        assert 0 < buffered < tx.written  # some bytes in the kernel, unacknowledged once its window filled
+        assert tx.delivered() == tx.written - buffered
+    finally:
+        writer.transport.abort()
+        server.close()
+
+
+@pytest.mark.parametrize("silent", [True, "after one frame"])
+async def test_link_that_does_not_answer_an_action_is_dropped_within_5_s(make_daemon, short_tmp, api_for, silent):
+    """A frame that was on its way when the link died does not count as an answer."""
+    async with Phone() as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        api = await api_for(daemon)
+        await until(lambda: daemon.devices[phone.id].activities)
+        old = session_of(daemon, phone.id)
+        phone.silent = silent
+        t0 = time.monotonic()
+        with pytest.raises(ApiError) as e:
+            await api.call("activities.action", {"device": phone.id, "activity": "media:x", "action": "media.pause"})
+        assert time.monotonic() - t0 < 6.5 and "may" in e.value.message
+        assert old.closed.is_set()
+
+
+async def test_new_address_announced_checks_the_session_on_the_old_one(make_daemon, short_tmp):
+    """DHCP renew / roam: the record now lists the new address while the cache still holds the old one."""
+    async with Phone() as phone:
+        pin_in(short_tmp / "daemon", phone.identity)
+        daemon = await make_daemon()
+        rec = {"id": phone.id, "name": "Pixel", "platform": "android", "addresses": [("127.0.0.1", phone.port)]}
+        daemon.on_lan("Pixel._orbit._tcp.local.", rec)
+        await until(lambda: daemon.devices[phone.id].activities)
+        old = session_of(daemon, phone.id)
+        phone.silent = True  # its old address is gone
+        moved = {**rec, "addresses": [("127.0.0.1", phone.port), ("127.0.0.2", phone.port)]}
+        daemon.on_lan("Pixel._orbit._tcp.local.", moved)
+        await until(lambda: old.closed.is_set(), timeout=core.PROBE_TIMEOUT + 1.5)
+
+
+def test_link_local_addresses_get_an_interface_to_try():
+    from orbit.daemon.discovery import LanDiscovery
+
+    lan = LanDiscovery(lambda *_: None)
+    lan._interfaces = frozenset({("eth0", "fe80::1"), ("wlan0", "fe80::2"), ("lo", "fe80::1"), ("eth0", "10.0.0.2")})
+    scoped = lan._scoped(["10.0.0.9", "fe80::9", "fe80::8%3"])
+    assert scoped == ["10.0.0.9", "fe80::9%eth0", "fe80::9%wlan0", "fe80::8%3"]

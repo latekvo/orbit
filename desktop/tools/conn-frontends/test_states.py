@@ -111,7 +111,8 @@ async def test_action_into_blackhole_reports_timeout_and_is_not_replayed(paired)
     n = w.phone_actions("media.next") - before
     st = (await w.device())["state"]
     measure("action_blackhole", result=res, error=err, latency=round(lat, 2), applied_after_heal=n, state=st)
-    assert err == ("timeout", "phone did not respond") and 9 <= lat <= 12.5
+    # A proxy that buffers the frame can deliver it after the heal: the answer must say it may apply.
+    assert err is not None and err[0] in ("timeout", "failed") and "may" in err[1] and lat <= 12.5
     assert n <= 1
 
 

@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from harness import JvmRig, run
 
-from test_lan_faults import DEAD_AFTER, RECOVER_WITHIN, SLACK
+from test_lan_faults import ACTION_SILENCE, DEAD_AFTER, RECOVER_WITHIN, SLACK, honest
 
 pytestmark = pytest.mark.skipif(not (Path(__file__).parent / "jvm" / "cp").is_dir(), reason="run jvm/build.sh")
 
@@ -82,8 +82,10 @@ def test_k_phone_frozen(jrig, record):
     time.sleep(5)
     applied = [round(e["t"] - t_f, 1) for e in r.phone_actions(t_f)]
     record(action_during=a, applied_at=applied, transitions=r.transitions(t_f))
-    assert a["error"]["code"] == "timeout"
-    assert not [x for x in r.transitions(t_f) if x[1] != "connected"]
+    # No answer to the action: the link is dropped 5 s later and is back once the phone thaws.
+    assert honest(a, len(applied))
+    assert r.first_state(t_f, "reconnecting") <= 3 + ACTION_SILENCE + 3
+    assert r.state() == "connected"
 
 
 @pytest.mark.slow

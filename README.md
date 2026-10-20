@@ -87,7 +87,10 @@ otherwise over Bluetooth LE.
   killing the companion: check the battery and auto-start settings above.
 - **Diagnostics:** `orbitd -v` logs every session close with its cause; the phone app's
   **Diagnostics** section shows the event log (copy/share it when reporting a bug).
-- **Several daemons:** `ORBIT_SOCKET` / `--socket` and `--config-dir` select an instance.
+- **Phone reset or reinstalled:** `orbit status` says so under the device; pair it again, and
+  `orbit forget` the old entry if it is still listed.
+- **Several daemons:** each needs its own `--config-dir` (one identity runs once) and socket
+  (`ORBIT_SOCKET` / `--socket`).
 
 ## Security model
 

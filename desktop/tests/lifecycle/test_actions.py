@@ -82,7 +82,8 @@ async def test_action_result_lost_half_open(lab):
         f"reconnecting at {t_rec - t0:.1f}s, connected at {t_conn - t0:.1f}s"
     )
     assert n == 1 and lat < 12.5
-    assert isinstance(res, ApiError) and res.code == "timeout"
+    # The silent link is dropped within 5 s of the action: "may have been applied", never "not sent".
+    assert isinstance(res, ApiError) and res.code in ("timeout", "failed") and "may" in res.message
     await proxy.close()
 
 

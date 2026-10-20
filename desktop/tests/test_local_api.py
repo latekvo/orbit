@@ -53,11 +53,13 @@ async def test_bool_port_and_deep_nesting_are_bad_requests(make_daemon, api_for)
     assert (await api.call("status"))["name"] == "Test Laptop"  # still serving
 
 
-async def test_client_that_never_reads_does_not_starve_others(make_daemon, api_for):
+async def test_client_that_never_reads_does_not_starve_others(make_daemon, api_for, monkeypatch):
     daemon = await make_daemon()
     api = await api_for(daemon)
+    big = "x" * 100_000  # a large answer to a small request, like art.get
+    monkeypatch.setattr(daemon, "devices_json", lambda: [{"id": "d" * 32, "name": big}])
     flooders = []
-    request = (json.dumps({"id": 1, "method": "devices.list"}) + "\n").encode() * 200_000
+    request = (json.dumps({"id": 1, "method": "devices.list"}) + "\n").encode() * 20_000
     for _ in range(3):
         s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         s.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 4096)
@@ -66,17 +68,20 @@ async def test_client_that_never_reads_does_not_starve_others(make_daemon, api_f
         flooders.append(s)
     loop = asyncio.get_running_loop()
     senders = [loop.create_task(loop.sock_sendall(s, request)) for s in flooders]
-    await asyncio.sleep(1.0)
+    await asyncio.sleep(2.0)
     t0 = time.monotonic()
     assert (await asyncio.wait_for(api.call("status"), 5))["name"] == "Test Laptop"
     latency = time.monotonic() - t0
     in_flight = len(daemon.api._tasks)
+    buffered = [c.writer.transport.get_write_buffer_size() for c in daemon.api.clients]
     for t in senders:
         t.cancel()
     for s in flooders:
         s.close()
-    print(f"status answered in {latency:.2f} s with {in_flight} requests in flight")
+    print(f"status answered in {latency:.2f} s with {in_flight} requests in flight, unread {buffered}")
     assert latency < 0.5 and in_flight <= 200  # requests are not read faster than they are answered
+    # Nor answered faster than the client reads: it is paused, not buffered for until it is dropped.
+    assert len(buffered) == 4 and max(buffered) < api_mod.MAX_CLIENT_BUFFER / 2
 
 
 async def test_cli_times_out_on_a_stopped_daemon(make_daemon, short_tmp, monkeypatch):

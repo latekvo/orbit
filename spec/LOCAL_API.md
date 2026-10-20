@@ -47,12 +47,11 @@ timeout should be longer than that, or than the method's own bound.
 `activities.action` answers within 12 s. On a `"reconnecting"` device it first waits up to
 5 s for the session to come back; after the computer wakes from sleep it waits until the
 session has proved alive (or was replaced). An action is re-sent on a new session only if the
-phone cannot have received the whole message (it never left this computer, or the phone's
-network stack never acknowledged all of it, and the old connection is then reset so that it
-cannot arrive later), so a toggle is never applied twice. A session that sends nothing back
+phone cannot have received the whole message (part of it never left this computer; the old
+connection is then reset so that it cannot arrive later), so a toggle is never applied twice. A session that sends nothing back
 within 5 s of an action is dropped. Errors:
 - `not_connected` `"reconnecting"`: the session was not back within 5 s; not sent;
-- `not_connected` `"phone offline"`: the device is `"offline"`; not sent;
+- `not_connected` `"phone offline"` (or the device's `problem`): the device is `"offline"`; not sent;
 - `failed` `"connection lost after the action was sent; it may have been applied"`;
 - `timeout` `"phone did not respond; it may still be applied"`: no `action_result` within the
   bound.
@@ -84,7 +83,8 @@ phone announces new addresses, and when the computer wakes, with the activities 
  "provisional": false,
  "problem": null}                         // or why it cannot be used as it is, for the user, e.g.
                                           // its address now answers as another device (reset or
-                                          // reinstalled phone), or the phone unpaired this computer
+                                          // reinstalled phone), or the phone unpaired this computer.
+                                          // Pairing that phone again (same name) removes this entry.
 
 // state: "reconnecting" for up to 15 s after a paired device's session dropped while orbitd
 // keeps trying to get it back ("connected" is false); its last activities stay listed with

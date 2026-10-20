@@ -1,11 +1,18 @@
 {
- "orbitd_pid_or_dead": "DEAD",
+ "orbitd_pid_or_dead": "24",
  "orbitd_log_tail": [
-  "  File \"/venv/lib/python3.12/site-packages/zeroconf/_utils/net.py\", line 275, in new_socket",
-  "    s.bind(bind_tup)",
-  "OSError: [Errno 98] Address already in use"
+  "2026-10-20 05:26:32,587 INFO orbit.daemon.discovery: mDNS over IPv6 unavailable ([Errno 98] Address already in use); using IPv4 only",
+  "2026-10-20 05:26:32,587 ERROR zeroconf: Address in use when binding to ('', 5353); When using avahi, make sure disallow-other-stacks is set to no in avahi-daemon.conf",
+  "2026-10-20 05:26:32,587 WARNING orbit.daemon.discovery: mDNS discovery unavailable (will retry): [Errno 98] Address already in use"
  ],
- "status_call": "ConnectionRefusedError: [Errno 111] Connection refused",
- "_outcome": "failed",
- "_at": "2026-10-20 04:48:29"
+ "status_call": "{\"t0\": 1792473998.2454631, \"result\": {\"version\": \"0.0.0\", \"name\": \"Laptop\", \"deviceId\": \"ad6e60e74419eca883b9e5527b68f3cb\", \"lan\": \"unavailable\", \"lanError\": \"[Errno 98] Address already in use\", \"ble\": \"off\", \"bleError\": null}, \"dt\": 0.0}",
+ "manual_connect": {
+  "t0": 1792473998.3255932,
+  "result": {
+   "id": "f3b9f41352fc5b6709525faaf55fe4a1"
+  },
+  "dt": 0.002
+ },
+ "_outcome": "passed",
+ "_at": "2026-10-20 07:26:38"
 }

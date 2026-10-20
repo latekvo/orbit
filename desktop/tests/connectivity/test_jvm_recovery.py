@@ -60,4 +60,4 @@ async def test_phone_down_65s(rig, workdir):
     log(
         f"phone down 65 s: connected {t_con - t_up:.1f}s after the phone was back; states {[(round(t - t0, 1), s) for t, s in laptop.state_log(dev, t0)]}"
     )
-    assert t_con - t_up < 5
+    assert t_con - t_up < 5 + 1.5  # retried at least every 5 s within the first 5 minutes (LOCAL_API.md)

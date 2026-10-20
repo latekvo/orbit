@@ -17,6 +17,15 @@ SLACK = 3.0
 # What a user can reasonably expect once the network is back: the phone shows up again within a
 # few seconds (no spec number exists; the connector's backoff grows to 60 s).
 RECOVER_WITHIN = 10.0
+ACTION_SILENCE = 5.0  # spec/PROTOCOL.md: closed when nothing arrives within 5 s of an action
+
+
+def honest(res, applied):
+    """A failed action says it may have been applied, or that it was not sent and indeed was not."""
+    err = res.get("error") or {}
+    if err.get("code") == "not_connected":
+        return applied == 0
+    return err.get("code") in ("timeout", "failed") and "may" in err.get("message", "")
 
 
 def wait_connected(rig, timeout):
@@ -79,9 +88,7 @@ def test_blackhole_action_in_flight(rig, record):
     res2 = r.action(action="media.next")
     record(first=res, applied_after_heal=[(round(a["t"] - t_f, 1), a["action"]) for a in applied], second=res2,
            transitions=r.transitions(t_f))  # fmt: skip
-    assert res["dt"] <= 12.5
-    assert res["error"]["code"] == "timeout"
-    assert "may have been applied" in res["error"]["message"] or res["error"]["message"] == "phone did not respond"
+    assert res["dt"] <= 12.5 and honest(res, len(applied))
     assert res2.get("result", {}).get("ok") is True
 
 
@@ -153,8 +160,8 @@ def test_half_open_phone_vanished(rig, record):
     recover = wait_connected(r, 120)
     record(transitions=r.transitions(t_f), action=res, recover_after_back_s=recover, back_at=round(t_back - t_f, 1),
            applied=len(r.phone_actions(t_f)))  # fmt: skip
-    assert r.first_state(t_f, "reconnecting") <= DEAD_AFTER + SLACK
-    assert res["error"]["code"] == "timeout" and res["dt"] <= 12.5
+    assert r.first_state(t_f, "reconnecting") <= ACTION_SILENCE + SLACK
+    assert res["dt"] <= 12.5 and honest(res, len(r.phone_actions(t_f)))
     assert recover <= RECOVER_WITHIN
 
 
@@ -175,8 +182,8 @@ def test_asymmetric_loss(rig, record, direction):
     record(transitions=r.transitions(t_f), action=res, applied=len(applied), recover_after_heal_s=recover,
            heal_at=round(t_h - t_f, 1), causes=[ln.split("cause=")[-1] for ln in r.orbitd_log().splitlines()
                                                 if "session_closed" in ln])  # fmt: skip
-    assert res["error"]["code"] == "timeout"
-    assert r.first_state(t_f, "reconnecting") <= DEAD_AFTER + SLACK
+    assert honest(res, len(applied))
+    assert r.first_state(t_f, "reconnecting") <= ACTION_SILENCE + SLACK
     assert recover <= RECOVER_WITHIN
 
 
@@ -541,11 +548,10 @@ def test_phone_frozen(rig, record, seconds):
     applied = [(round(x["t"] - t_f, 1), x["session"]) for x in r.phone_actions(t_f)]
     record(transitions=r.transitions(t_f), action_during=a, action_after=a2, applied=applied,
            connected_after_cont_s=round(t_ok - t_c, 1))  # fmt: skip
-    assert a["error"]["code"] == "timeout" and a["dt"] <= 12.5
-    if seconds < DEAD_AFTER:
-        assert not [x for x in r.transitions(t_f) if x[1] != "connected"]
-    else:
-        assert t_ok - t_c <= RECOVER_WITHIN
+    # The action draws no answer: the link is dropped 5 s later and is back once the phone thaws.
+    assert a["dt"] <= 12.5 and honest(a, len([x for x in applied if x[0] < t_ok - t_f]))
+    assert r.first_state(t_f, "reconnecting") <= 3 + ACTION_SILENCE + SLACK
+    assert t_ok - t_c <= RECOVER_WITHIN
     assert a2.get("result", {}).get("ok") is True
 
 

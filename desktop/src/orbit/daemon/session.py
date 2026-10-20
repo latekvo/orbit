@@ -4,13 +4,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import fcntl
 import logging
 import secrets
 import socket
 import struct
-import sys
-import termios
 import time
 from typing import TYPE_CHECKING, Any
 
@@ -26,7 +23,8 @@ log = logging.getLogger(__name__)
 UNPAIRED_ALLOWED = {"pair_request", "pair_decision", "ping", "pong", "bye", "error"}
 SENT_THEN_LOST = "connection lost after the action was sent; it may have been applied"
 NO_RESPONSE = "phone did not respond; it may still be applied"
-SO_NWRITE = 0x1024  # macOS: bytes in the send buffer, i.e. not yet acknowledged by the peer
+# A probe also passes if data is still arriving at its deadline (a large frame, a burst of art).
+PROBE_FLOWING = 1.0
 
 
 class LinkDown(ConnectionError):
@@ -80,8 +78,8 @@ class WatchedWriter:
     """FrameStream writer that counts the bytes written and can tell how many the phone may have.
 
     ``delivered()`` is the number of leading bytes that may have reached the phone: for TCP those
-    its network stack acknowledged, for BLE those handed to the radio (``BleLink.handed``); None
-    when that cannot be known.
+    handed to the kernel (unacknowledged ones too: the acknowledgement can be what was lost), for
+    BLE those handed to the radio (``BleLink.handed``); None when that cannot be known.
     """
 
     def __init__(self, writer: Any) -> None:
@@ -103,19 +101,9 @@ class WatchedWriter:
         if isinstance(handed, int):
             return handed
         transport = getattr(self._writer, "transport", None)
-        sock = transport.get_extra_info("socket") if transport is not None else None
-        if sock is None or sock.family not in (socket.AF_INET, socket.AF_INET6):
+        if transport is None:
             return None
-        try:
-            if sys.platform == "darwin":
-                queued = sock.getsockopt(socket.SOL_SOCKET, SO_NWRITE)
-            elif sys.platform.startswith("linux"):
-                queued = struct.unpack("i", fcntl.ioctl(sock.fileno(), termios.TIOCOUTQ, b"\0" * 4))[0]
-            else:
-                return None
-        except (OSError, ValueError):
-            return None
-        return self.written - transport.get_write_buffer_size() - queued
+        return self.written - transport.get_write_buffer_size()
 
     def abort(self) -> None:
         """Drop the connection now, discarding unsent and unacknowledged bytes (TCP: RST)."""
@@ -175,9 +163,8 @@ class Session:
         self._rx: WatchedReader = channel.stream.reader
         self._tx: WatchedWriter = channel.stream.writer
         self._abort = False
-        self._probe_deadline: float | None = None
-        self._probe_mark = 0.0
-        self._probe_reason = ""
+        # Pending liveness probes: (deadline, reason, first ping req, first action req that answers it).
+        self._probes: list[tuple[float, str, int, int]] = []
         self._verified = asyncio.Event()
         self._verified.set()
         self._kick = asyncio.Event()
@@ -267,20 +254,20 @@ class Session:
 
     # ---- liveness ----------------------------------------------------------------------------
 
-    def probe(self, reason: str, timeout: float, hold_actions: bool = False, ping: bool = True) -> None:
-        """Close the session unless a byte arrives from the phone within ``timeout`` (a ping asks for one).
+    def probe(
+        self, reason: str, timeout: float, hold_actions: bool = False, ping: bool = True, action: int | None = None
+    ) -> None:
+        """Close the session unless, within ``timeout``, the phone answers a ping sent from now on (``ping``
+        sends one) or the action ``action``, or data is still arriving at the deadline. Other bytes prove
+        nothing: they may have been on their way before the link died.
 
         ``hold_actions``: actions wait for the outcome instead of being sent on a link that may be dead.
         """
         if self.closed.is_set():
             return
-        now = time.monotonic()
-        if self._probe_deadline is None:
-            self._probe_mark, self._probe_deadline, self._probe_reason = now, now + timeout, reason
-            if ping:
-                self._spawn(self._ping())
-        elif now + timeout < self._probe_deadline:
-            self._probe_deadline, self._probe_reason = now + timeout, reason
+        self._probes.append((time.monotonic() + timeout, reason, self._ping_req + 1, action or self._req + 1))
+        if ping:
+            self._spawn(self._ping())
         if hold_actions and not self.suspect:
             self.suspect = True
             self._verified.clear()
@@ -300,8 +287,16 @@ class Session:
         """Seconds since the last byte from the phone."""
         return time.monotonic() - self._rx.last_byte
 
+    def _answered(self, ping: Any = None, action: Any = None) -> None:
+        """A pong or action_result arrived: it passes the probes started before its request was sent."""
+        ping = ping if isinstance(ping, int) else -1
+        action = action if isinstance(action, int) else -1
+        if self._probes:
+            self._probes = [p for p in self._probes if ping < p[2] and action < p[3]]
+            if not self._probes:
+                self._probe_passed()
+
     def _probe_passed(self) -> None:
-        self._probe_deadline = None
         if self.suspect:
             self.suspect = False
             self._verified.set()
@@ -335,7 +330,7 @@ class Session:
             await self.send(msg, req)
             # A phone that is alive answers within a moment (its action_result or our ping's pong);
             # silence means the link died, and the action must not be delivered later.
-            self.probe("no answer to an action", self.daemon.action_probe)
+            self.probe("no answer to an action", self.daemon.action_probe, action=req)
             result = await asyncio.wait_for(fut, timeout)
         except TimeoutError:
             raise ApiError("timeout", NO_RESPONSE) from None
@@ -403,10 +398,10 @@ class Session:
             time.monotonic() - self.opened,
             self.close_reason,
         )
-        # Judged before the transport goes: afterwards the kernel no longer says what was acknowledged.
+        # Judged before the transport goes, which discards its buffer.
         outcomes = self._outcomes = {req: self._may_have(req) for req in self._pending}
         if self._abort or not all(outcomes.values()):
-            # Unacknowledged bytes must not reach the phone later (TCP would keep retransmitting them).
+            # Bytes in flight must not reach the phone later (TCP would keep retransmitting them).
             with contextlib.suppress(Exception):
                 self._tx.abort()
         with contextlib.suppress(Exception):
@@ -457,12 +452,14 @@ class Session:
             now = time.monotonic()
             last = self._rx.last_byte
             silent = now - last
-            if self._probe_deadline is not None:
-                if last > self._probe_mark:
-                    self._probe_passed()
-                elif now >= self._probe_deadline:
-                    self._dead(f"no data from phone for {silent:.0f} s ({self._probe_reason})")
+            due = [p for p in self._probes if now >= p[0]]
+            if due:
+                if silent >= PROBE_FLOWING:
+                    self._dead(f"no data from phone for {silent:.0f} s ({min(due)[1]})")
                     return
+                self._probes = [p for p in self._probes if p not in due]
+                if not self._probes:
+                    self._probe_passed()
             if silent >= d.dead_after or (self._rx.mid_frame and silent >= d.stall_after):
                 what = "mid-frame" if silent < d.dead_after else "from phone"
                 self._dead(f"no data {what} for {silent:.0f} s")
@@ -474,8 +471,8 @@ class Session:
                 self.probe("no answer to a ping", d.stall_after, ping=False)
                 continue
             wake = min(self._rx.last_byte + min(d.dead_after, d.stall_after), self._last_tx + d.keepalive)
-            if self._probe_deadline is not None:
-                wake = min(wake, now + 0.05)
+            if self._probes:
+                wake = min([wake] + [p[0] for p in self._probes])
             self._kick.clear()
             with contextlib.suppress(TimeoutError):
                 await asyncio.wait_for(self._kick.wait(), max(0.01, wake - now))
@@ -501,7 +498,7 @@ class Session:
             case "ping":
                 await self.send({"t": "pong", "req": msg.get("req")})
             case "pong":
-                pass
+                self._answered(ping=msg.get("req"))
             case "bye":
                 self.close_reason = f"phone said bye ({msg.get('reason') or 'no reason'})"
                 self._finish()
@@ -533,6 +530,7 @@ class Session:
             case "art":
                 d.store_art(self, msg)
             case "action_result":
+                self._answered(action=msg.get("req"))
                 fut = self._pending.get(msg.get("req"))
                 if fut is not None and not fut.done():
                     fut.set_result(msg)

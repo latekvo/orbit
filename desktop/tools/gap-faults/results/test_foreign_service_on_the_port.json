@@ -2,25 +2,25 @@
  "http_302": {
   "dt": 0.052,
   "code": "failed",
-  "message": "handshake with 10.232.12.3:47830 failed: bad_frame: frame length 1213486160"
+  "message": "10.232.11.3:47830 is not an Orbit phone (it does not speak Orbit)"
  },
  "silent_accept": {
-  "dt": 10.003,
+  "dt": 10.002,
   "code": "timeout",
-  "message": "handshake with 10.232.12.3:47831 timed out"
+  "message": "10.232.11.3:47831 accepted the connection but the Orbit handshake did not arrive within 10 s"
  },
  "tarpit": {
-  "dt": 9.999,
+  "dt": 10.005,
   "code": "timeout",
-  "message": "handshake with 10.232.12.3:47832 timed out"
+  "message": "10.232.11.3:47832 accepted the connection but the Orbit handshake did not arrive within 10 s"
  },
  "accept_then_close": {
   "dt": 0.001,
   "code": "failed",
-  "message": "handshake with 10.232.12.3:47833 failed: 0 bytes read on a total of 4 expected bytes"
+  "message": "10.232.11.3:47833 closed the connection during the handshake"
  },
- "orbitd_fds_after": 15,
+ "orbitd_fds_after": 17,
  "orbitd_alive": true,
- "_outcome": "failed",
- "_at": "2026-10-20 04:48:49"
+ "_outcome": "passed",
+ "_at": "2026-10-20 07:26:43"
 }

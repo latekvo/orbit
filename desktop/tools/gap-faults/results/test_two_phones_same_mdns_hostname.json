@@ -1,58 +1,41 @@
 {
  "lan_records": {
-  "8b3a01d7": {
+  "dfe7cea2": {
    "Fake Phone._orbit._tcp.local.": [
     [
-     "10.232.10.4",
+     "10.232.13.4",
      47820
     ],
     [
-     "10.232.10.5",
+     "10.232.13.5",
      47820
     ]
    ]
   },
-  "66eb364b": {
+  "9b999d94": {
    "Pixel 7._orbit._tcp.local.": [
     [
-     "10.232.10.4",
+     "10.232.13.4",
      47820
     ],
     [
-     "10.232.10.5",
+     "10.232.13.5",
      47820
     ]
    ]
   }
  },
- "reconnect_s": 1.62,
+ "reconnect_s": 0.56,
  "action": {
-  "t0": 1792464512.5797427,
+  "t0": 1792473985.6207206,
   "result": {
    "ok": true
   },
   "dt": 0.001
  },
  "wrong_device_attempts": [],
- "sessions_on_phone_b": 2,
- "phone_b_events": [
-  {
-   "t": 1792464512.252519,
-   "kind": "session",
-   "session": "s1",
-   "peer": "09c8ca93b8d8625ba8ac048f8276da1d",
-   "name": "Laptop",
-   "address": "10.232.10.2:45602"
-  },
-  {
-   "t": 1792464512.252704,
-   "kind": "session_closed",
-   "session": "s1",
-   "peer": "09c8ca93b8d8625ba8ac048f8276da1d",
-   "name": "Laptop",
-   "reason": "connection closed by peer"
-  }
- ],
+ "sessions_on_phone_b": 0,
+ "phone_b_events": [],
  "_outcome": "failed",
- "_at": "2026-10-20 04:48:32"
+ "_at": "2026-10-20 07:26:25"
 }

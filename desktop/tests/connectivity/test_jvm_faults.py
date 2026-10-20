@@ -14,8 +14,8 @@ PAUSE = f"{MEDIA['id']}/media.pause"
 
 
 async def test_blackhole_both_ways_detected_and_recovered(rig):
-    """Every byte stops both ways, no FIN/RST (Wi-Fi gone). Both sides must notice within 30 s and
-    reconnect once the path is back."""
+    """Every byte stops both ways, no FIN/RST (Wi-Fi gone). The laptop must notice within 20 s (its
+    ping draws no answer), the phone within 30 s, and both reconnect once the path is back."""
     phone, proxy, laptop, dev = await setup(rig)
     t0 = time.monotonic()
     proxy.up.set(mode="pause")
@@ -35,13 +35,13 @@ async def test_blackhole_both_ways_detected_and_recovered(rig):
     t_con = await laptop.wait_state(dev, "connected", 90, t_back)
     log(f"blackhole: connected {t_con - t_back:.1f}s after the path came back")
     log("states", [(round(t - t0, 1), s) for t, s in laptop.state_log(dev, t0)])
-    assert 28 <= t_rec - t0 <= 33
+    assert t_rec - t0 <= 22
     assert t_phone - t0 <= 33
 
 
 async def test_action_in_short_blackhole_is_applied_late_after_timeout(rig):
-    """A 20 s outage (both ways, no FIN/RST): the laptop answers "timeout" after ~10-12 s, then the
-    outage ends and TCP delivers the queued action anyway. The user's retry runs it a second time."""
+    """A 20 s outage (both ways, no FIN/RST) swallows an action and the user's retry: the laptop must
+    say each may have been applied, and the phone must run the pause at most once."""
     phone, proxy, laptop, dev = await setup(rig)
     t0 = time.monotonic()
     proxy.up.set(mode="pause")
@@ -59,9 +59,7 @@ async def test_action_in_short_blackhole_is_applied_late_after_timeout(rig):
     log(f"short blackhole: retry answered after {dt2:.1f}s: {r2!r}")
     log("phone executed", [round(ts - t0, 1) for ts, _ in acts], "outage ended at", round(t_heal - t0, 1))
     log("laptop states", [(round(t - t0, 1), s) for t, s in laptop.state_log(dev, t0)])
-    # The user was told the first press did not get an answer; it must not be applied later
-    # (and a retry must not make it two).
-    assert isinstance(r1, ApiError) and r1.code == "timeout"
+    assert isinstance(r1, ApiError) and "may" in r1.message
     assert len(acts) <= 1, f"phone executed the pause {len(acts)} times, at {[round(ts - t0, 1) for ts, _ in acts]} s"
 
 
@@ -90,7 +88,8 @@ async def test_frozen_phone_executes_stale_action_after_thaw(rig):
     log(
         "phone closes", [(round(ts - t0, 1), e["session"], e["reason"]) for ts, e in phone.events("session_closed", t0)]
     )
-    assert isinstance(r, ApiError) and r.code == "timeout"
+    assert isinstance(r, ApiError) and "may" in r.message
+    # The frame sits in the frozen phone's socket buffer: only the phone can refuse a stale action.
     assert not acts, (
         "the phone executed an action the laptop had already reported as timed out, after the laptop dropped the session"
     )
@@ -110,7 +109,7 @@ async def test_half_open_phone_to_laptop_lost(rig):
     log(
         f"half-open p->l: action {dt:.1f}s {r!r}; laptop reconnecting {t_rec - t0:.1f}s; phone closed by {t_pc - t0:.1f}s ({closed['reason']}); connected {t_con - t0:.1f}s"
     )
-    assert 28 <= t_rec - t0 <= 33
+    assert t_rec - t0 <= 5 + 3  # the action draws no answer within 5 s
 
 
 async def test_half_open_laptop_to_phone_lost(rig):

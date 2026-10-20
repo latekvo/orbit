@@ -1,15 +1,16 @@
 {
  "device_after_40s": {
-  "id": "9af58ccea8b5e40f0b95d4395b3566ec",
+  "id": "d251b848ae38107bdc0071857ec0bb09",
   "name": "Fake Phone",
   "platform": "android",
   "paired": true,
-  "connected": false,
-  "state": "offline",
-  "transport": null,
-  "address": null,
+  "connected": true,
+  "state": "connected",
+  "transport": "lan",
+  "address": "10.232.10.3:47820",
   "discovered": [],
-  "provisional": false
+  "provisional": false,
+  "problem": null
  },
  "transitions": [
   [
@@ -17,11 +18,13 @@
    "reconnecting"
   ],
   [
-   15.04,
-   "offline"
+   1.05,
+   "connected"
   ]
  ],
- "log": [],
- "_outcome": "failed",
- "_at": "2026-10-20 04:49:09"
+ "log": [
+  "2026-10-20 05:26:22,913 INFO orbit.daemon.discovery: ignoring Fake Phone._orbit._tcp.local.: it speaks Orbit protocol version 2, this computer 1; update Orbit on the older side"
+ ],
+ "_outcome": "passed",
+ "_at": "2026-10-20 07:27:03"
 }

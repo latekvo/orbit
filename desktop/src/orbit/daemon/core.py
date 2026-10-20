@@ -523,8 +523,11 @@ class Daemon:
         self.changed("devices")
         dev.wake.set()
         s = dev.session
-        if s and s.transport == "lan" and s.address not in {format_hostport(*a) for a in info["addresses"]}:
-            # The phone moved: the session may be talking to an address that is gone.
+        addrs = {format_hostport(*a) for a in info["addresses"]}
+        added = old is not None and addrs - {format_hostport(*a) for a in old.addresses}
+        if s and s.transport == "lan" and (s.address not in addrs or added):
+            # The phone moved: the session may be talking to an address that is gone (and that the
+            # mDNS cache still lists).
             s.probe("the phone announced a new address", PROBE_TIMEOUT)
         if s and s.transport == "ble" and s.paired and dev.auto:
             self._spawn(self._upgrade_to_lan(dev))
@@ -932,6 +935,8 @@ class Daemon:
         if dev is None:
             return
         dev.mismatch[route.address] = (other_id, time.monotonic())
+        if self._drop_if_superseded(dev, other_id, other_name):
+            return
         if dev.session is not None or self.store.get(other_id):
             return  # reachable elsewhere, or a known phone sharing the address's host name
         problem = (
@@ -942,6 +947,25 @@ class Daemon:
             log.warning("%s (%s): %s", dev.name, dev.id, problem)
             dev.problem = problem
             self.changed("devices")
+
+    def _drop_if_superseded(self, old: Device, new_id: str, new_name: str) -> bool:
+        """Forget ``old`` if it is the same phone as the paired ``new_id`` under a new identity (reset,
+        reinstalled): one of its addresses answered as ``new_id``, and the name is the same."""
+        if (
+            old.id == new_id
+            or old.name != new_name
+            or not self.store.get(new_id)
+            or not any(i == new_id for i, _ in old.mismatch.values())
+        ):
+            return False
+        log.info("forgetting %s (%s): it was paired again as %s", old.name, old.id, new_id)
+        self.store.remove(old.id)
+        if old.connector:
+            old.connector.cancel()
+        self._end_grace(old)
+        self.devices.pop(old.id, None)
+        self.changed("devices", "activities")
+        return True
 
     async def _adopt(self, session: Session, explicit: bool) -> Session:
         peer = session.peer
@@ -1058,6 +1082,8 @@ class Daemon:
         last_lan = session.address if session.transport == "lan" and not session.manual else None
         self.store.pin(PinnedPeer(peer.id, peer.name, peer.platform, peer.static, address, last_lan))
         log.info("paired with %s (%s)", peer.name, peer.id)
+        for old in list(self.devices.values()):
+            self._drop_if_superseded(old, peer.id, peer.name)
         dev = self._device(peer.id)
         dev.auto = True
         dev.problem = None
@@ -1236,7 +1262,7 @@ class Daemon:
             session = dev.session
             if session is None:
                 if dev.grace is None:
-                    raise ApiError("not_connected", "phone offline")
+                    raise ApiError("not_connected", dev.problem or "phone offline")
                 # Reconnecting: hold the action until the session is back, up to action_wait.
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(dev.transition.wait(), deadline - loop.time())

@@ -71,8 +71,9 @@ class SilentPinger:
             w.close()
 
 
-@pytest.mark.parametrize("every,survives", [(25, True), (31, False)])
-async def test_peer_that_only_pings_every_n_seconds(lab, every, survives):
+@pytest.mark.parametrize("every,survives", [(5, True), (25, False), (31, False)])
+async def test_peer_that_never_answers_our_pings(lab, every, survives):
+    """Our ping must draw some byte within 10 s (spec 2, ping); the peer's own pings count as bytes."""
     d = Orbitd(lab.root)
     lab.procs.append(d)
     async with SilentPinger(every, b"") as peer:
@@ -91,11 +92,11 @@ async def test_peer_that_only_pings_every_n_seconds(lab, every, survives):
             f"({cause[0][1].split('cause=')[1] if cause else '-'})"
         )
         assert (t_drop is None) == survives
-        if not survives:
-            assert 29 <= t_drop - t0 <= 32
+        if not survives:  # our ping 10 s after the snapshot exchange, then 10 s for an answer
+            assert 18 <= t_drop - t0 <= 22
 
 
-async def test_frozen_phone_detected_in_30s_and_frozen_laptop_detected_by_phone(lab):
+async def test_frozen_phone_detected_in_20s_and_frozen_laptop_detected_by_phone(lab):
     d = await lab.daemon()
     p = await lab.phone()
     api = await lab.api(d)
@@ -118,7 +119,7 @@ async def test_frozen_phone_detected_in_30s_and_frozen_laptop_detected_by_phone(
         f"frozen laptop: phone noticed after {t_phone - t1:.1f}s; after SIGCONT connected again in "
         f"{t_back - t_phone:.1f}s"
     )
-    assert 29 <= t_rec - t0 <= 32 and 29 <= t_phone - t1 <= 32
+    assert 10 <= t_rec - t0 <= 22 and 29 <= t_phone - t1 <= 32
 
 
 @pytest.mark.parametrize("pause", [15, 22])
