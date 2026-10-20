@@ -231,12 +231,10 @@ class ResponderSession(
             localDecision = accepted
             complete = accepted && remoteDecision == true
         }
-        enqueue { send(buildJsonObject { put("t", "pair_decision"); put("accepted", accepted) }) }
-        when {
-            !accepted -> closeAfterFlush("pairing rejected locally")
-            complete -> becomePaired()
-            else -> host.sessionChanged(this)
-        }
+        val decision = { send(buildJsonObject { put("t", "pair_decision"); put("accepted", accepted) }) }
+        if (!accepted) return closeAfterFlush("pairing rejected locally", decision)
+        enqueue(decision)
+        if (complete) becomePaired() else host.sessionChanged(this)
     }
 
     private fun onRemoteDecision(accepted: Boolean) {
@@ -321,15 +319,12 @@ class ResponderSession(
 
     /** Sends `unpair` (when the session is up) and closes; used when the local user forgets the peer. */
     fun unpairAndClose() {
-        enqueue { send(buildJsonObject { put("t", "unpair") }) }
-        closeAfterFlush("forgotten locally")
+        closeAfterFlush("forgotten locally") { send(buildJsonObject { put("t", "unpair") }) }
     }
 
     /** Sends `bye` with [bye] as its reason and closes for [reason]. */
-    fun shutdown(reason: String, bye: String = reason) {
-        enqueue { send(buildJsonObject { put("t", "bye"); put("reason", bye) }) }
-        closeAfterFlush(reason)
-    }
+    fun shutdown(reason: String, bye: String = reason) =
+        closeAfterFlush(reason) { send(buildJsonObject { put("t", "bye"); put("reason", bye) }) }
 
     private fun tick() {
         val now = elapsed()
@@ -468,8 +463,10 @@ class ResponderSession(
 
     // --- teardown ---
 
-    private fun closeAfterFlush(reason: String) {
+    /** Closed before [last] is queued, so nothing else follows it and the peer never sees an open session after it. */
+    private fun closeAfterFlush(reason: String, last: (() -> Unit)? = null) {
         if (!markClosed(reason)) return
+        if (last != null) enqueue(last)
         try {
             sender.execute { runCatching { stream.close() } }
         } catch (_: RejectedExecutionException) {

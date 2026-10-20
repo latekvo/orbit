@@ -145,6 +145,28 @@ class ConnectivityFaultsTest {
         assertTrue("pinned after the pairing deadline: ${host.pins.keys}", host.pins.isEmpty())
     }
 
+    /** A peer that has read the `bye` (or `unpair`) finds the session already closed: nothing can follow it. */
+    @Test
+    fun farewellIsSentOnlyOnceTheSessionIsClosed() {
+        for ((farewell, close) in listOf<Pair<String, (ResponderSession) -> Unit>>(
+            "bye" to { it.shutdown("test") },
+            "unpair" to { it.unpairAndClose() },
+        )) {
+            val (session, c) = pairedSession(SessionTimeouts())
+            val lock = ResponderSession::class.java.getDeclaredField("lock").apply { isAccessible = true }.get(session)
+            var early: ResponderSession.State? = null
+            synchronized(lock) { // stalls the close, so a farewell sent before it shows up here
+                Thread { close(session) }.start()
+                c.socket.soTimeout = 300
+                if (runCatching { c.recvType(farewell) }.isSuccess) early = session.state
+            }
+            assertEquals("$farewell sent while the session was open", null, early)
+            c.socket.soTimeout = 5000
+            c.recvType(farewell)
+            assertEquals(ResponderSession.State.CLOSED, session.state)
+        }
+    }
+
     /** The unpaired deadline closes a live session: the initiator is told why before the close. */
     @Test
     fun unpairedTimeoutSaysByeWithAReason() {
