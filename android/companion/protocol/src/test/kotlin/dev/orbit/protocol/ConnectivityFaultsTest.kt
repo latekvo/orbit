@@ -76,6 +76,24 @@ class ConnectivityFaultsTest {
         return session to c
     }
 
+    /** A session after the handshake and both `ready`s, with the laptop not pinned. */
+    private fun unpairedSession(timeouts: SessionTimeouts): Pair<ResponderSession, Client> {
+        val created = ArrayBlockingQueue<ResponderSession>(1)
+        threads.execute {
+            val sock = server.accept()
+            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, clock = now::get, timeouts = timeouts)
+            created.put(s)
+            s.run()
+        }
+        val sock = Socket("127.0.0.1", server.localPort).apply { soTimeout = 5000 }
+        sockets += sock
+        val frames = CapturingFrames(SocketByteStream(sock))
+        val c = Client(Handshake.initiate(frames, laptop, "Laptop", "linux"), frames, sock)
+        c.recvType("ready")
+        c.ch.send(json("""{"t":"ready","paired":false,"now":1}"""))
+        return created.take() to c
+    }
+
     private fun waitFor(what: String, ms: Long = 5000, cond: () -> Boolean) {
         val deadline = System.currentTimeMillis() + ms
         while (!cond()) {
@@ -104,6 +122,34 @@ class ConnectivityFaultsTest {
         Thread.sleep(500)
         assertTrue("executed an action read 45 s after the last byte: ${host.actions}", host.actions.isEmpty())
         assertEquals(ResponderSession.State.CLOSED, session.state)
+    }
+
+    /** Same freeze during pairing: the laptop's acceptance arrives after the pairing deadline. */
+    @Test
+    fun pairDecisionReadAfterThePairingDeadlineDoesNotPair() {
+        val (session, c) = unpairedSession(SessionTimeouts(tickMs = 3_600_000, pairingMs = 40_000))
+        c.ch.send(json("""{"t":"pair_request"}"""))
+        waitFor("pairing") { session.state == ResponderSession.State.PAIRING }
+        session.decidePairing(true)
+        assertEquals("pair_decision", c.recvType("pair_decision").type)
+        now.addAndGet(25_000)
+        c.ch.send(json("""{"t":"ping","req":1}""")) // keeps the idle deadline away
+        assertEquals("pong", c.recvType("pong").type)
+        now.addAndGet(20_000)
+        c.ch.send(json("""{"t":"pair_decision","accepted":true}"""))
+        assertEquals(json("""{"t":"bye","reason":"pairing timeout"}"""), c.recvType("bye"))
+        assertEquals("pairing timeout", session.closeReason)
+        assertTrue("pinned after the pairing deadline: ${host.pins.keys}", host.pins.isEmpty())
+    }
+
+    /** The unpaired deadline closes a live session: the initiator is told why before the close. */
+    @Test
+    fun unpairedTimeoutSaysByeWithAReason() {
+        val (session, c) = unpairedSession(SessionTimeouts(tickMs = 20, unpairedMs = 1_000, pingAfterMs = 3_600_000))
+        now.addAndGet(1_000)
+        assertEquals(json("""{"t":"bye","reason":"not paired"}"""), c.recvType("bye"))
+        waitFor("close") { session.state == ResponderSession.State.CLOSED }
+        assertEquals("unpaired timeout", session.closeReason)
     }
 
     /** spec 5: "any byte counts, so a large frame still arriving keeps the session alive". */
