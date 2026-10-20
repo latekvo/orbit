@@ -176,7 +176,7 @@ its own clock. Media positions are valid at the message's `now`.
 | `upsert` | R->I | `now`, `activity: Activity` - add or replace by `id` |
 | `remove` | R->I | `id` |
 | `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64), `part`/`parts` when the image is sent in parts (5.3). Sent at most once per `key` per session, possibly after the activities that reference it (5.3). `key` = first 16 hex chars of SHA-256(image). Images are at most 256x256. |
-| `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below) |
+| `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below), `expiresAt` (optional int, R's epoch ms; 5.2) |
 | `action_result` | R->I | `req`, `ok` (bool), `error` (optional string) |
 | `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive), without handling anything read after that deadline (such as an `action` read when a frozen process resumes: the peer has given up on it). I also closes when one of its pings goes unanswered for 10 s, or an `action` for 5 s, each plus 4 round-trip times (an answer is the `pong`, the `action_result`, or data still arriving at that moment), so a silently dead link is noticed before the user's click could be delivered late. A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
 | `bye` | both | `reason` (optional). Sender closes after sending. |
@@ -242,6 +242,21 @@ Well-known action ids:
 | `open` | open the activity on the phone | - |
 | `dismiss` | dismiss the activity (only offered if dismissable) | - |
 | `notif.<n>` | the n-th action of the source notification | text if the action has `input` |
+
+`expiresAt` is I's estimate of R's clock (local now minus `offset`) at the moment I stops waiting
+for the `action_result`: 5 s plus 4 round-trip times after sending (the `action` liveness bound in
+5), or less when I's own deadline for the request comes first. I sets it only once R has sent a
+`now`. R MUST NOT apply an action it reads at or after `expiresAt` by its wall clock: it
+answers `ok: false`, `error: "expired"` (a non-integer `expiresAt` draws `"bad_request"`). Without
+`expiresAt` R applies an action whenever it reads it. I tells its user that an action may have
+failed only once its `expiresAt` has passed, also when the session ends sooner, so an action R
+reads from a buffer after a freeze or an outage is refused instead of applied after the user
+was told it failed (and may have retried it).
+
+The estimate lags R's clock by the transit time of the message whose `now` it came from, so R
+refuses early rather than late. A step of R's wall clock after that message moves the expiry by
+the step: a step back lets R apply an action up to that much after I gave up; a step forward makes
+R refuse actions sooner, until I sees a newer `now`.
 
 ### 5.3 Art delivery
 

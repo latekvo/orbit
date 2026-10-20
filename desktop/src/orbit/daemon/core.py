@@ -1285,12 +1285,15 @@ class Daemon:
             raise ApiError("not_found", f"unknown device {dev_id}")
         self.check_clocks()
         try:
-            async with asyncio.timeout(self.action_deadline):
-                return await self._action(dev, activity, action, value, "value" in params)
+            async with asyncio.timeout(self.action_deadline) as scope:
+                return await self._action(dev, activity, action, value, "value" in params, scope.when())
         except TimeoutError:
             raise ApiError("timeout", NO_RESPONSE) from None
 
-    async def _action(self, dev: Device, activity: str, action: str, value: Any, has_value: bool) -> dict[str, Any]:
+    async def _action(
+        self, dev: Device, activity: str, action: str, value: Any, has_value: bool, give_up: float
+    ) -> dict[str, Any]:
+        """``give_up``: loop time at which the API call answers ``timeout`` whatever the phone does."""
         loop = asyncio.get_running_loop()
         deadline = loop.time() + self.action_wait
         while True:
@@ -1309,7 +1312,8 @@ class Daemon:
             if activity not in dev.activities:
                 raise ApiError("not_found", f"unknown activity {activity}")
             try:
-                return await session.action(activity, action, value, has_value, self.action_timeout)
+                timeout = min(self.action_timeout, give_up - loop.time())
+                return await session.action(activity, action, value, has_value, timeout)
             except ActionNotSent as e:
                 log.info("action %s on %s not sent (%s); waiting for the next session", action, dev.id, e)
                 # A fresh wait for the next session (still within action_deadline overall).

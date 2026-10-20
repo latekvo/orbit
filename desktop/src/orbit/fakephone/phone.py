@@ -670,7 +670,13 @@ class FakePhone:
         activity_id, action_id, value = msg.get("activity"), msg.get("action"), msg.get("value")
         entry = self._activities.get(activity_id) if isinstance(activity_id, str) else None
         error: str | None = None
+        expires = msg.get("expiresAt")
         try:
+            # Spec 5: the laptop has told its user the action failed by then (the Kotlin twin's onAction).
+            if "expiresAt" in msg and (isinstance(expires, bool) or not isinstance(expires, int)):
+                raise ActionError("bad_request")
+            if expires is not None and now_ms() >= expires:
+                raise ActionError("expired")
             if entry is None:
                 raise ActionError(f"unknown activity {activity_id!r}")
             if not isinstance(action_id, str):

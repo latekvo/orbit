@@ -322,6 +322,85 @@ async def test_action_timeout_and_result_passthrough(make_daemon, short_tmp, api
         assert e.value.code == "timeout"
 
 
+async def test_action_expires_on_the_phone_clock_when_orbitd_stops_waiting(make_daemon, short_tmp, api_for):
+    skew = 3_600_000  # phone clock one hour ahead
+    seen = []
+
+    async def after(ch):
+        await ch.send({"t": "snapshot", "now": now_ms() + skew, "activities": [{"id": "a", "kind": "generic"}]})
+        while True:
+            msg = await ch.recv()
+            if msg["t"] == "action":
+                seen.append((msg.get("expiresAt"), now_ms() + skew))
+                error = {"error": "expired"} if msg["action"] == "late" else {}
+                await ch.send({"t": "action_result", "req": msg["req"], "ok": not error} | error)
+
+    async with RawPhone(lambda ch: paired_script(ch, after)) as phone:
+        daemon = await connect_pinned(make_daemon, short_tmp, phone, action_probe=0.8, action_timeout=3.0)
+        api = await api_for(daemon)
+        await until(lambda: api.call("activities.list"))
+        base = {"device": phone.id, "activity": "a"}
+        assert await api.call("activities.action", {**base, "action": "go"}) == {"ok": True}
+        rtt_ms = daemon.devices[phone.id].session.rtt * 1000
+        daemon.action_timeout = 0.4  # below the probe window
+        assert await api.call("activities.action", {**base, "action": "late"}) == {
+            "ok": False,
+            "error": session_mod.EXPIRED,
+        }
+        daemon.action_timeout, daemon.action_deadline = 3.0, 0.5  # the API call's own bound comes first
+        assert await api.call("activities.action", {**base, "action": "go"}) == {"ok": True}
+    (probe_at, read1), (timeout_at, read2), (deadline_at, read3) = seen
+    assert 700 <= probe_at - read1 <= 800 + 4 * rtt_ms + 50
+    assert 300 <= timeout_at - read2 <= 400
+    assert 400 <= deadline_at - read3 <= 500
+
+
+async def test_no_action_expiry_without_the_phone_clock(make_daemon, short_tmp, api_for):
+    seen = []
+
+    async def script(ch):
+        await ch.send({"t": "ready", "paired": True})
+        await ch.recv()
+        await ch.send({"t": "snapshot", "activities": [{"id": "a", "kind": "generic"}]})
+        while True:
+            msg = await ch.recv()
+            if msg["t"] == "action":
+                seen.append(msg)
+                await ch.send({"t": "action_result", "req": msg["req"], "ok": True})
+
+    async with RawPhone(script) as phone:
+        daemon = await connect_pinned(make_daemon, short_tmp, phone)
+        api = await api_for(daemon)
+        await until(lambda: api.call("activities.list"))
+        assert await api.call("activities.action", {"device": phone.id, "activity": "a", "action": "go"}) == {
+            "ok": True
+        }
+    assert "expiresAt" not in seen[0]
+
+
+async def test_action_lost_with_the_session_is_answered_once_it_expired(make_daemon, short_tmp, api_for):
+    """The phone could still read the action from a buffer and apply it until it expires."""
+    got = asyncio.get_running_loop().create_future()
+
+    async def after(ch):
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [{"id": "a", "kind": "generic"}]})
+        while (await ch.recv())["t"] != "action":
+            pass
+        if not got.done():
+            got.set_result(asyncio.get_running_loop().time())
+        # Returning closes the connection with the action unanswered.
+
+    async with RawPhone(lambda ch: paired_script(ch, after)) as phone:
+        daemon = await connect_pinned(make_daemon, short_tmp, phone, action_probe=1.5, action_timeout=5.0)
+        api = await api_for(daemon)
+        await until(lambda: api.call("activities.list"))
+        with pytest.raises(ApiError) as e:
+            await api.call("activities.action", {"device": phone.id, "activity": "a", "action": "go"})
+        answered = asyncio.get_running_loop().time()
+    assert (e.value.code, e.value.message) == ("failed", session_mod.SENT_THEN_LOST)
+    assert answered - await got >= 1.4
+
+
 async def test_local_api_errors_and_socket_mode(make_daemon, api_for):
     daemon = await make_daemon()
     assert stat.S_IMODE(os.stat(daemon.api.path).st_mode) == 0o600

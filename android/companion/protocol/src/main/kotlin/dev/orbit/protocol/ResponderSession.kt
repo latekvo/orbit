@@ -60,7 +60,7 @@ class ResponderSession(
     private val hub: ActivityHub,
     private val host: SessionHost,
     private val scheduler: ScheduledExecutorService,
-    /** Wall-clock epoch ms, for the `now` fields. */
+    /** Wall-clock epoch ms, for the `now` fields and action expiry. */
     private val clock: () -> Long = System::currentTimeMillis,
     private val timeouts: SessionTimeouts = SessionTimeouts(),
     /**
@@ -301,6 +301,12 @@ class ResponderSession(
         val activityId = msg.str("activity")
         val actionId = msg.str("action")
         if (req == null || activityId == null || actionId == null) return result(false, "bad_request")
+        // The initiator has told its user the action failed by then (spec 5): applying it later
+        // (read from a buffer after a freeze or outage) would be a press the user retries.
+        if (msg["expiresAt"] != null) {
+            val expiresAt = msg.long("expiresAt") ?: return result(false, "bad_request")
+            if (clock() >= expiresAt) return result(false, "expired")
+        }
         val activity = hub.get(activityId) ?: return result(false, "unknown_activity")
         val listed = (activity["actions"] as? JsonArray)?.any { (it as? JsonObject)?.str("id") == actionId } == true
         // Transport controls stay valid while the listed set flips (play <-> pause, seekable while

@@ -57,6 +57,12 @@ Errors:
 - `timeout` `"phone did not respond; it may still be applied"`: no `action_result` within the
   bound.
 
+Both "may" errors come only once the action's expiry has passed (PROTOCOL.md 5.2), so a phone
+that enforces it does not apply the action after the answer.
+A phone that receives the action after its expiry answers
+`{"ok": false, "error": "the action reached the phone too late and was not applied"}`.
+Other `ok: false` answers carry the phone's own `error`.
+
 ## Connecting
 
 orbitd keeps every paired device connected that was not disconnected with `devices.disconnect`.

@@ -438,6 +438,39 @@ async def test_a_frame_still_arriving_keeps_the_session_alive(make_phone):
     assert phone.sessions and not phone.sessions[0].closed
 
 
+async def test_action_past_its_expiry_is_refused_unapplied(make_phone):
+    phone = await make_phone()
+    laptop = Laptop()
+    await pair(phone, laptop)
+    pause = {"activity": "media:com.example.music", "action": "media.pause"}
+    now = phone_module.now_ms()
+    for req, expires, error in ((1, now - 1, "expired"), (2, "soon", "bad_request"), (3, None, "bad_request")):
+        await laptop.send({"t": "action", "req": req, "expiresAt": expires} | pause)
+        result, _ = await laptop.recv_until(lambda m: m["t"] == "action_result")
+        assert result == {"t": "action_result", "req": req, "ok": False, "error": error}
+    assert phone.media.state == "playing"
+    await laptop.send({"t": "action", "req": 4, "expiresAt": now + 60_000} | pause)
+    result, _ = await laptop.recv_until(lambda m: m["t"] == "action_result")
+    assert result == {"t": "action_result", "req": 4, "ok": True}
+    assert phone.media.state == "paused"
+    result, _ = await laptop.action("media:com.example.music", "media.play")  # no expiresAt
+    assert result["ok"] is True and phone.media.state == "playing"
+
+
+async def test_action_expiry_boundary_is_refused(make_phone, monkeypatch):
+    phone = await make_phone()
+    laptop = Laptop()
+    await pair(phone, laptop)
+    monkeypatch.setattr(phone_module, "now_ms", lambda: 1_000_000)
+    msg = {"t": "action", "req": 1, "activity": "media:com.example.music", "action": "media.pause"}
+    await laptop.send(msg | {"expiresAt": 1_000_000})
+    result, _ = await laptop.recv_until(lambda m: m["t"] == "action_result")
+    assert result["error"] == "expired" and phone.media.state == "playing"
+    await laptop.send(msg | {"req": 2, "expiresAt": 1_000_001})
+    result, _ = await laptop.recv_until(lambda m: m["t"] == "action_result")
+    assert result["ok"] is True and phone.media.state == "paused"
+
+
 async def test_action_read_after_the_silence_deadline_is_not_applied(make_phone):
     """Bytes that waited past dead_after (the process was stopped) are not handled: the peer gave up."""
     phone = await make_phone(keepalive=10, dead_after=0.5)

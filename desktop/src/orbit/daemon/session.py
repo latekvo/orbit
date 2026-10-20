@@ -25,6 +25,7 @@ log = logging.getLogger(__name__)
 UNPAIRED_ALLOWED = {"pair_request", "pair_decision", "ping", "pong", "bye", "error"}
 SENT_THEN_LOST = "connection lost after the action was sent; it may have been applied"
 NO_RESPONSE = "phone did not respond; it may still be applied"
+EXPIRED = "the action reached the phone too late and was not applied"
 # A probe also passes if data is still arriving at its deadline (a large frame, a burst of art).
 PROBE_FLOWING = 1.0
 # Probe deadlines grow by this many round-trip times: on a slow, lossy link TCP needs a few of them to
@@ -153,6 +154,8 @@ class Session:
         self.remote_paired = False
         self.pairing: Pairing | None = None
         self.offset = 0
+        # The phone has sent a `now`, so `offset` estimates its clock (action expiry, spec 5.2).
+        self.clock_known = False
         self.closed = asyncio.Event()
         self.started = False
         self.close_reason = ""
@@ -330,6 +333,7 @@ class Session:
     # ---- actions -------------------------------------------------------------------------------
 
     async def action(self, activity: str, action: str, value: Any, has_value: bool, timeout: float) -> dict[str, Any]:
+        """Send an action and wait up to ``timeout`` for its result (spec 5.2 for its expiry)."""
         if self.suspect:
             await self._verified.wait()
         if self.closed.is_set():
@@ -341,6 +345,11 @@ class Session:
         msg: dict[str, Any] = {"t": "action", "req": req, "activity": activity, "action": action}
         if has_value:
             msg["value"] = value
+        # The phone refuses the action from when we stop waiting for it: the probe below, or ``timeout``.
+        budget = min(self.daemon.action_probe + PROBE_RTTS * self.rtt, timeout)
+        expires = time.monotonic() + budget
+        if self.clock_known:
+            msg["expiresAt"] = now_ms() - self.offset + int(budget * 1000)
         try:
             await self.send(msg, req)
             # A phone that is alive answers within a moment (its action_result or our ping's pong);
@@ -359,6 +368,8 @@ class Session:
                 self.close_reason = self.close_reason or f"connection lost: {e}"
                 self._finish()
             if sent:
+                # Until it expires the phone may still read the action from a buffer and apply it.
+                await asyncio.sleep(expires - time.monotonic())
                 raise ApiError("failed", SENT_THEN_LOST) from None
             raise ActionNotSent(str(e)) from None
         finally:
@@ -369,7 +380,7 @@ class Session:
                 _retrieve(fut)
         out: dict[str, Any] = {"ok": result.get("ok") is True}
         if result.get("error") is not None:
-            out["error"] = str(result["error"])
+            out["error"] = EXPIRED if result["error"] == "expired" else str(result["error"])
         return out
 
     def _may_have(self, req: int) -> bool:
@@ -436,6 +447,7 @@ class Session:
         now = msg.get("now")
         if isinstance(now, int | float) and not isinstance(now, bool):
             self.offset = now_ms() - int(now)
+            self.clock_known = True
             return int(now)
         return now_ms() - self.offset
 

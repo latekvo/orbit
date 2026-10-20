@@ -70,11 +70,15 @@ class SessionTest {
     }
 
     /** Starts a responder session on the next accepted socket and connects an initiator to it. */
-    private fun connect(laptop: KeyPair = KeyPair.generate(), timeouts: SessionTimeouts = SessionTimeouts()): Pair<ResponderSession, Client> {
+    private fun connect(
+        laptop: KeyPair = KeyPair.generate(),
+        timeouts: SessionTimeouts = SessionTimeouts(),
+        clock: () -> Long = System::currentTimeMillis,
+    ): Pair<ResponderSession, Client> {
         val created = java.util.concurrent.ArrayBlockingQueue<ResponderSession>(1)
         threads.execute {
             val sock = server.accept()
-            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, timeouts = timeouts)
+            val s = ResponderSession(SocketByteStream(sock), "lan", phone, "Phone", "android", hub, host, scheduler, clock, timeouts)
             created.put(s)
             s.run()
         }
@@ -212,6 +216,28 @@ class SessionTest {
         c.send("""{"t":"action","req":11,"activity":"media:p","action":"media.play"}""")
         assertEquals(json("""{"t":"action_result","req":11,"ok":false,"error":"boom"}"""), c.recvType("action_result"))
         assertEquals(4, host.actions.size)
+    }
+
+    @Test
+    fun actionsPastTheirExpiryAreRefusedUnapplied() {
+        hub.upsert(activity("x", "T"))
+        val (session, c) = connect(clock = { 1_000_000L })
+        pair(session, c)
+        c.recvType("snapshot")
+        c.send("""{"t":"action","req":1,"activity":"x","action":"notif.0","expiresAt":999999}""")
+        assertEquals(json("""{"t":"action_result","req":1,"ok":false,"error":"expired"}"""), c.recvType("action_result"))
+        c.send("""{"t":"action","req":2,"activity":"x","action":"notif.0","expiresAt":1000000}""")
+        assertEquals("expired", c.recvType("action_result").str("error"))
+        c.send("""{"t":"action","req":3,"activity":"x","action":"notif.0","expiresAt":"soon"}""")
+        assertEquals("bad_request", c.recvType("action_result").str("error"))
+        c.send("""{"t":"action","req":6,"activity":"x","action":"notif.0","expiresAt":null}""")
+        assertEquals("bad_request", c.recvType("action_result").str("error"))
+        assertTrue(host.actions.isEmpty())
+        c.send("""{"t":"action","req":4,"activity":"x","action":"notif.0","expiresAt":1000001}""")
+        assertEquals(json("""{"t":"action_result","req":4,"ok":true}"""), c.recvType("action_result"))
+        c.send("""{"t":"action","req":5,"activity":"x","action":"notif.0"}""")
+        assertEquals(json("""{"t":"action_result","req":5,"ok":true}"""), c.recvType("action_result"))
+        assertEquals(2, host.actions.size)
     }
 
     @Test
