@@ -58,7 +58,8 @@ async def test_netfilter_short_outage_applies_timed_out_actions_late(rig):
     log(
         f"netfilter 20 s outage: 1st {dt1:.1f}s {r1!r}; retry {dt2:.1f}s {r2!r}; healed at {t_heal:.1f}s; phone executed at {acts}; laptop states {states}"
     )
-    assert isinstance(r1, ApiError) and r1.code == "timeout"
+    # Not applied as far as the user knows: "timeout", or "not_connected" (never reached the phone).
+    assert isinstance(r1, ApiError) and r1.code in ("timeout", "not_connected")
     assert len(acts) <= 1
 
 

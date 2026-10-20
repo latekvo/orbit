@@ -21,7 +21,8 @@ Every transport provides one reliable, ordered, bidirectional **byte stream per 
 - R listens on TCP port `47820` (falls back to any free port if taken).
 - R advertises DNS-SD service type `_orbit._tcp` (mDNS, `local.`), instance name = human
   device name, TXT records:
-  - `v=1` - protocol version
+  - `v=1` - the protocol versions R speaks, comma-separated (`v=1,2`); I ignores a
+    responder that lists none it speaks
   - `id=<deviceId>` - see 3.1
   - `pf=<platform>` - `android`, `linux`, `macos`, ...
 - I may also connect to a manually entered `host:port` (used for emulators behind
@@ -124,6 +125,9 @@ Each device keeps a set of **pinned peers**: `deviceId -> static public key` (+ 
 Immediately after the key schedule, each side sends an encrypted
 `{"t":"ready","paired":<bool>,"now":<epoch ms>}` where `paired` says whether it has the
 peer's static key pinned. A session is **paired** iff both sides send `paired:true`.
+I's `ready` MAY carry `"art": [<key>, ...]`, the art keys it still holds from earlier sessions;
+R SHOULD then not resend those (they count as sent in this session, see `art` in 5), so a
+reconnect's snapshot is not held up behind art the laptop already has.
 An initiator that connects to a specific known device MUST check that the responder's `id`
 is the expected one; a different `id` is a different, unpaired device.
 
@@ -169,7 +173,7 @@ its own clock. Media positions are valid at the message's `now`.
 | `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64). Sent before the first activity that references `key` in this session. `key` = first 16 hex chars of SHA-256(data). Images are at most 256x256. |
 | `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below) |
 | `action_result` | R->I | `req`, `ok` (bool), `error` (optional string) |
-| `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive). A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
+| `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive). I also closes when nothing at all arrives within 10 s of one of its pings, and within 5 s of an `action`, so a silently dead link is noticed before the user's click could be delivered late. A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
 | `bye` | both | `reason` (optional). Sender closes after sending. |
 | `error` | both | `code`, `message` |
 

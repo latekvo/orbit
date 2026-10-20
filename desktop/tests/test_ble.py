@@ -12,7 +12,7 @@ from daemon_helpers import RawPhone, pin_in, until
 from orbit.client import ApiError
 from orbit.daemon import ble, core
 from orbit.daemon.ble import RX_UUID, TX_UUID, BleLink, chunk_size
-from orbit.daemon.session import SENT_THEN_LOST
+from orbit.daemon.session import NO_RESPONSE
 from orbit.daemon.timeconv import now_ms
 from orbit.proto import FrameStream, KeyPair, device_id, respond
 
@@ -592,13 +592,12 @@ async def test_stalled_link_is_torn_down_and_clicks_answered_within_the_bound(bl
     assert "link stalled" in session.close_reason and loop.time() - t0 < 1.0
     assert "disconnect" in stalled.log
 
-    with pytest.raises(ApiError) as e:
-        await first
-    assert (e.value.code, e.value.message) == ("failed", SENT_THEN_LOST)
+    # The first action's frame stopped at its first chunk: the phone cannot have applied it.
+    assert await first == {"ok": True}
     assert await second == {"ok": True}
     assert loop.time() - t0 < 3.0
     fresh = FakeGattLink.instances[-1]
-    assert fresh is not stalled and fresh.actions == ["media.next"] and stalled.actions == []
+    assert fresh is not stalled and sorted(fresh.actions) == ["media.next", "media.pause"] and stalled.actions == []
     assert connected_via(daemon, dev_id, "A1")
     assert unretrieved() == []
 
@@ -661,7 +660,7 @@ async def test_action_without_a_result_times_out_within_the_bound(ble_phone):
     t0 = loop.time()
     with pytest.raises(ApiError) as e:
         await api.call("activities.action", {"device": dev_id, "activity": "media:x", "action": "media.play"})
-    assert (e.value.code, e.value.message) == ("timeout", "phone did not respond")
+    assert (e.value.code, e.value.message) == ("timeout", NO_RESPONSE)
     assert 0.45 < loop.time() - t0 < 0.8
 
 

@@ -25,6 +25,7 @@ from test_ble import (  # noqa: F401  (fixtures)
 )
 
 from orbit.client import ApiError
+from orbit.daemon.session import SENT_THEN_LOST
 
 slow = pytest.mark.skipif(not os.environ.get("ORBIT_SLOW"), reason="minutes of real time; set ORBIT_SLOW=1")
 DEFAULTS = {"ble_link_timeout": 4.0, "connect_timeout": 10.0}
@@ -134,6 +135,7 @@ class InterruptedGatt(FakeGattLink):
         self.writes = getattr(self, "writes", 0) + 1
         if self.on_write:
             self.on_write(self, self.writes)
+        await asyncio.sleep(0)  # the ATT round trip: other events (an invalidation) can land between chunks
         await super().write_gatt_char(uuid, data, response)
 
 
@@ -148,7 +150,7 @@ async def _armed_click(ble_phone, interrupted, hook):  # noqa: F811
     daemon, api, dev_id, radio = await connected_phone(ble_phone)
     link = link_to(radio.address)
     start = link.writes
-    interrupted.on_write = lambda lk, n: hook(lk, n - start) if lk is link else None
+    interrupted.on_write = staticmethod(lambda lk, n: hook(lk, n - start) if lk is link else None)
     try:
         result = await pause(api, dev_id)
     except ApiError as e:
@@ -320,7 +322,7 @@ async def test_bluetooth_off_at_startup_then_on(ble_phone, adapter, caplog):  # 
     warnings = [r for r in caplog.records if r.levelname == "WARNING" and "BLE discovery unavailable" in r.getMessage()]
     print(f"connected {latency:.1f} s after Bluetooth came on; {adapter.starts} scan starts, {len(warnings)} warnings")
     radio.stop()
-    assert latency < 32  # spec: "unavailable" is retried with backoff up to every 30 s
+    assert latency < 8  # spec: "unavailable" is retried with backoff up to every 5 s
 
 
 async def _is(api, state):
@@ -634,11 +636,12 @@ async def test_notifications_stop_mid_frame_with_default_timings(ble_phone):  # 
 # ---- LAN gone, BLE still there ----------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("how", ["closed", "silent"])
+@pytest.mark.parametrize("how", ["closed", "silent", "silent-idle"])
 async def test_wifi_drop_falls_back_to_ble_quickly(ble_phone, how):  # noqa: F811
     """On LAN with BLE also advertising; the phone leaves Wi-Fi. mDNS still lists its addresses
     (records outlive the phone by their TTL), which now black-hole. "closed": the laptop sees the
-    TCP connection end; "silent": it does not (the phone's interface just went away)."""
+    TCP connection end; "silent": it does not (the phone's interface just went away), and a click
+    is made at once; "silent-idle": the same without a click."""
     from daemon_helpers import RawPhone
     from test_ble import SNAPSHOT
 
@@ -670,12 +673,13 @@ async def test_wifi_drop_falls_back_to_ble_quickly(ble_phone, how):  # noqa: F81
         log.mark()
         daemon.devices[dev_id].lan["P._orbit._tcp.local."].addresses = [("10.255.255.1", 47820), ("fd00::dead", 47820)]
         t0 = loop.time()
-        if how == "silent":
+        if how.startswith("silent"):
             mute.set()
-            click = asyncio.ensure_future(pause(api, dev_id))  # clicked while the LAN link is silently dead
+            if how == "silent":
+                click = asyncio.ensure_future(pause(api, dev_id))  # clicked while the LAN link is silently dead
             await until(lambda: daemon.devices[dev_id].session is None, timeout=40)
     lost = loop.time() - t0
-    if how == "closed":
+    if how != "silent":
         click = asyncio.ensure_future(pause(api, dev_id))
     await until(lambda: connected_via(daemon, dev_id, radio.address), timeout=60)
     on_ble = loop.time() - t0
@@ -686,7 +690,9 @@ async def test_wifi_drop_falls_back_to_ble_quickly(ble_phone, how):  # noqa: F81
     print(f"{how}: LAN lost after {lost:.1f} s, on BLE after {on_ble:.1f} s; click: {result}; states {log.states}")
     radio.stop()
     log.stop()
-    assert on_ble < 10 and result == {"ok": True}
+    assert on_ble < 10
+    # "silent": the loopback phone still acknowledged (and read) the click, so it may have it.
+    assert result in ({"ok": True}, ("failed", SENT_THEN_LOST) if how == "silent" else None)
 
 
 async def test_bluetooth_permission_denied(ble_phone, adapter, caplog):  # noqa: F811
@@ -698,4 +704,5 @@ async def test_bluetooth_permission_denied(ble_phone, adapter, caplog):  # noqa:
     await asyncio.sleep(62)
     warnings = [r for r in caplog.records if r.levelname == "WARNING"]
     print(f"status {status}; {adapter.starts} scan starts and {len(warnings)} warnings in 62 s")
-    assert "denied" in status["bleError"]
+    assert status["bleError"].startswith("Bluetooth access is denied by the user")  # the message, not a tuple
+    assert len(warnings) == 1  # retried quietly

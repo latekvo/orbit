@@ -132,9 +132,14 @@ class Adapter:
         self.starts = 0
         adapter = self
 
+        class CentralManager:  # CoreBluetooth's CBCentralManager, as bleak's backend holds it
+            def state(self):
+                return 5 if adapter.powered else 4  # CBManagerStatePoweredOn / PoweredOff
+
         class Scanner:
             def __init__(self, detection_callback=None, service_uuids=None, **_):
                 self.callback = detection_callback
+                self._backend = SimpleNamespace(_manager=SimpleNamespace(central_manager=CentralManager()))
 
             async def start(self):
                 adapter.starts += 1

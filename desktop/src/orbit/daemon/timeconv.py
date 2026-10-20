@@ -31,3 +31,15 @@ def to_local(activity: dict[str, Any], device: str, sender_now: int, offset: int
     if isinstance(media, dict):
         media["positionAtMs"] = int(sender_now + offset)
     return out
+
+
+def shift_local(activity: dict[str, Any], delta: int) -> None:
+    """Move the converted timestamps of ``activity`` (from :func:`to_local`) by ``delta`` ms, in place."""
+    if _num(activity.get("updatedMs")):
+        activity["updatedMs"] = int(activity["updatedMs"] + delta)
+    chrono = activity.get("chrono")
+    if isinstance(chrono, dict) and _num(chrono.get("baseMs")):
+        chrono["baseMs"] = int(chrono["baseMs"] + delta)
+    media = activity.get("media")
+    if isinstance(media, dict) and _num(media.get("positionAtMs")):
+        media["positionAtMs"] = int(media["positionAtMs"] + delta)

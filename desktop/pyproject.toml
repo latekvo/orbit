@@ -6,6 +6,7 @@ requires-python = ">=3.11"
 dependencies = [
     "cryptography>=42",
     "zeroconf>=0.132",
+    "ifaddr>=0.2",
     "bleak>=0.22",
     "dbus-fast>=2.21; sys_platform == 'linux'",
 ]

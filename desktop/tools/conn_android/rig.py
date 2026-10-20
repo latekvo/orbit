@@ -26,7 +26,8 @@ from typing import Any
 from orbit.client import ApiError, LocalClient
 
 REPO = Path(__file__).resolve().parents[3]
-JVMPHONE = REPO / "android/companion/jvmphone/build/install/jvmphone/bin/jvmphone"
+JVMPHONE_DEFAULT = REPO / "android/companion/jvmphone/build/install/jvmphone/bin/jvmphone"
+JVMPHONE = Path(os.environ.get("ORBIT_JVMPHONE", JVMPHONE_DEFAULT))
 JAVA_HOME = os.environ.get("JAVA_HOME", "/Applications/Android Studio.app/Contents/jbr/Contents/Home")
 
 
@@ -210,14 +211,16 @@ class Rig:
         if not self.phone or self.phone.p.poll() is not None:
             return None
         jcmd = Path(JAVA_HOME) / "bin/jcmd"
-        out = subprocess.run([str(jcmd), str(self.phone.p.pid), "Thread.print"], capture_output=True, text=True, timeout=20)
+        cmd = [str(jcmd), str(self.phone.p.pid), "Thread.print"]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         return out.stdout.count('" #') or out.stdout.count('"\n') or None
 
     def phone_thread_names(self) -> list[str]:
         if not self.phone or self.phone.p.poll() is not None:
             return []
         jcmd = Path(JAVA_HOME) / "bin/jcmd"
-        out = subprocess.run([str(jcmd), str(self.phone.p.pid), "Thread.print"], capture_output=True, text=True, timeout=20)
+        cmd = [str(jcmd), str(self.phone.p.pid), "Thread.print"]
+        out = subprocess.run(cmd, capture_output=True, text=True, timeout=20)
         return [ln.split('"')[1] for ln in out.stdout.splitlines() if ln.startswith('"')]
 
     def phone_fds(self) -> int | None:

@@ -26,6 +26,8 @@ _NOT_SENT_MESSAGES = ("Not connected", "Service Discovery has not been performed
 # Peripheral address -> called (on the event loop) when the phone invalidates the Orbit service.
 _invalidation_listeners: dict[str, Callable[[], None]] = {}
 _hook_loop: asyncio.AbstractEventLoop | None = None
+# How long to wait for BlueZ's MTU exchange after connecting before writing with the default MTU.
+BLUEZ_MTU_WAIT = 1.0
 
 
 def chunk_size(mtu: int) -> int:
@@ -49,6 +51,11 @@ class BleLink:
         self.address = str(client.address)
         self.lost_cause: str | None = None
         self._closed = False
+        # Bytes handed to the radio: the phone may have them (a write's acknowledgement can be lost).
+        self.handed = 0
+
+    def set_chunk(self, chunk: int) -> None:
+        self._chunk = chunk
 
     def lost(self, cause: str) -> None:
         if self.lost_cause is not None:
@@ -71,14 +78,15 @@ class BleLink:
                     raise LinkDown(f"BLE link lost: {self.lost_cause}", sent=not first)
                 chunk = bytes(self._buf[: self._chunk])
                 del self._buf[: self._chunk]
+                self.handed += len(chunk)
                 try:
                     await self._client.write_gatt_char(RX_UUID, chunk, response=True)
                 except Exception as e:
-                    pre_send = first and (
-                        isinstance(e, BleakCharacteristicNotFoundError) or str(e) in _NOT_SENT_MESSAGES
-                    )
+                    pre_send = isinstance(e, BleakCharacteristicNotFoundError) or str(e) in _NOT_SENT_MESSAGES
+                    if pre_send:
+                        self.handed -= len(chunk)
                     self.lost(f"write failed: {e}")
-                    raise LinkDown(f"BLE write failed: {e}", sent=not pre_send) from e
+                    raise LinkDown(f"BLE write failed: {e}", sent=not (first and pre_send)) from e
                 first = False
 
     def close(self) -> None:
@@ -165,14 +173,12 @@ async def open_ble(device: Any, link_timeout: float) -> FrameStream:
     client = BleakClient(device, disconnected_callback=disconnected, timeout=link_timeout)
     try:
         await client.connect()
-        backend = getattr(client, "_backend", None)
-        if hasattr(backend, "_acquire_mtu"):  # BlueZ reports 23 until the MTU is acquired
-            with contextlib.suppress(Exception):
-                await backend._acquire_mtu()
-        link = BleLink(client, reader, chunk_size(client.mtu_size))
+        link = BleLink(client, reader, 20)
         _invalidation_listeners[link.address] = link._on_invalidated
         # Subscribe before the first write: the session starts when notifications are enabled.
         await client.start_notify(TX_UUID, lambda _ch, data: reader.feed_data(bytes(data)))
+        mtu = await _mtu(client)
+        link.set_chunk(chunk_size(mtu))
     except BaseException as e:
         if isinstance(e, asyncio.CancelledError):
             _abort_pending_connect(client)
@@ -182,5 +188,26 @@ async def open_ble(device: Any, link_timeout: float) -> FrameStream:
             with contextlib.suppress(Exception):
                 await client.disconnect()
         raise
-    log.info("BLE link to %s, MTU %d", client.address, client.mtu_size)
+    log.info("BLE link to %s, MTU %d", client.address, mtu)
     return FrameStream(reader, link)
+
+
+async def _mtu(client: Any) -> int:
+    """The connection's ATT MTU.
+
+    On BlueZ bleak only knows it after ``_acquire_mtu``, which calls AcquireNotify on TX and closes
+    the fd: BlueZ then writes the TX CCCD to 0 and the phone ends the session it just started
+    (spec 1.2). The characteristic's ``MTU`` property (BlueZ >= 5.62) has it without side effects;
+    it reads 23 until the MTU exchange that BlueZ starts on connect completes.
+    """
+    backend = getattr(client, "_backend", None)
+    if not hasattr(backend, "_acquire_mtu"):
+        return client.mtu_size
+    char = client.services.get_characteristic(RX_UUID) if client.services else None
+    if char is None:
+        return 23
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + BLUEZ_MTU_WAIT
+    while (mtu := char.max_write_without_response_size + 3) <= 23 and loop.time() < deadline:  # noqa: ASYNC110
+        await asyncio.sleep(0.05)  # a D-Bus property change; bleak offers no event for it
+    return mtu

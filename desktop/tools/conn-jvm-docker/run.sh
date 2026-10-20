@@ -7,12 +7,14 @@ set -euo pipefail
 here="$(cd "$(dirname "$0")" && pwd)"
 repo="$(cd "$here/../../.." && pwd)"
 export JAVA_HOME="${JAVA_HOME:-/Applications/Android Studio.app/Contents/jbr/Contents/Home}"
-(cd "$repo/android/companion" && ./gradlew -q :protocol:harnessClasspath)
+# ORBIT_HARNESS_CLASSPATH: a harness.classpath built elsewhere (e.g. another worktree); else build it here.
+classpath_file="${ORBIT_HARNESS_CLASSPATH:-$repo/android/companion/protocol/build/harness.classpath}"
+[ -n "${ORBIT_HARNESS_CLASSPATH:-}" ] || (cd "$repo/android/companion" && ./gradlew -q :protocol:harnessClasspath)
 dist="$(mktemp -d /tmp/conn-jvm-dist.XXXXXX)"
 trap 'rm -rf "$dist"' EXIT
 cp_out=()
 i=0
-IFS=: read -ra entries < "$repo/android/companion/protocol/build/harness.classpath" || true
+IFS=: read -ra entries < "$classpath_file" || true
 for e in "${entries[@]}"; do
     [ -e "$e" ] || continue
     i=$((i + 1))
