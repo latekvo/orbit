@@ -26,7 +26,7 @@ from ..paths import ensure_private_dir
 from ..proto import FrameStream, ProtocolError, device_id, initiate
 from ..store import PeerStore, PinnedPeer, load_or_create_identity
 from .api import AlreadyRunning
-from .session import NO_RESPONSE, PROBE_RTTS, ActionNotSent, Session, WatchedReader, WatchedWriter
+from .session import NO_RESPONSE, PROBE_RTTS, ActionNotSent, LinkDown, Session, WatchedReader, WatchedWriter
 from .timeconv import shift_local, to_local
 
 log = logging.getLogger(__name__)
@@ -68,6 +68,8 @@ PROBE_TIMEOUT = 4.0
 # A LAN session silent this long is checked (answer within LAN_CHECK) when the phone's BLE advertisement shows up.
 LAN_QUIET_WITH_BLE = 4.0
 LAN_CHECK = 2.0
+# devices.ping waits this long for the pong.
+PING_TIMEOUT = 5.0
 CLOCK_TICK = 2.0
 CLOCK_JUMP = 3.0
 LOCK_FILE = "orbitd.lock"
@@ -1320,6 +1322,18 @@ class Daemon:
                 deadline = loop.time() + self.action_wait
                 with contextlib.suppress(TimeoutError):
                     await asyncio.wait_for(session.closed.wait(), max(0.0, deadline - loop.time()))
+
+    async def api_ping(self, params: dict[str, Any]) -> dict[str, Any]:
+        dev = self._known(params.get("id"))
+        if dev.session is None:
+            raise ApiError("not_connected", f"{dev.id} is not connected")
+        try:
+            rtt = await asyncio.wait_for(dev.session.ping(), PING_TIMEOUT)
+        except TimeoutError:
+            raise ApiError("timeout", f"no pong within {PING_TIMEOUT:g} s") from None
+        except LinkDown as e:
+            raise ApiError("not_connected", str(e)) from None
+        return {"rttMs": round(rtt * 1000, 1)}
 
     def api_art(self, params: dict[str, Any]) -> dict[str, Any]:
         dev_id, key = params.get("device"), params.get("key")

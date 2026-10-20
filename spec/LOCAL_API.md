@@ -31,6 +31,7 @@ Newline-delimited JSON, one object per line, UTF-8.
 | `devices.list` | - | `[Device]` |
 | `devices.connect` | `{"id"}` or `{"host", "port"}` | `{"id": "<deviceId>"}` once the handshake completes (pairing may follow); always the real 32-hex id, also when `id` was provisional. An already connected device's session is first checked (it must answer within 4 s, else it is replaced). Answers within 12 s (else `timeout`, listing the addresses that failed) |
 | `devices.disconnect` | `{"id"}` | `true`; also stops a `"reconnecting"` device from reconnecting, including a connection attempt already under way |
+| `devices.ping` | `{"id"}` | `{"rttMs": number}`: the round trip of a protocol `ping` on the device's session (`not_connected` without one or if it closes meanwhile, `timeout` after 5 s) |
 | `devices.forget` | `{"id"}` | `true` - unpairs (sends `unpair` if connected) and removes all stored data |
 | `pairing.list` | - | `[Pairing]` |
 | `pairing.respond` | `{"session", "accept": bool}` | `true` |

@@ -119,6 +119,37 @@ async def test_ping_deadline_allows_for_the_round_trip_time(make_daemon, short_t
         assert len(pongs) >= 3
 
 
+async def test_devices_ping_answers_with_the_round_trip(make_daemon, short_tmp, api_for, monkeypatch):
+    monkeypatch.setattr(core_mod, "PING_TIMEOUT", 0.5)
+    delays = {1: 0.2, 2: 0.0}  # by ping req; later pings are never answered
+
+    async def phone(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+        while True:
+            msg = await ch.recv()
+            if msg["t"] == "ping" and msg["req"] in delays:
+                await ch.send({"t": "pong", "req": msg["req"] + 100})  # not this ping's
+                await asyncio.sleep(delays[msg["req"]])
+                await ch.send({"t": "pong", "req": msg["req"]})
+
+    async with RawPhone(phone) as raw:
+        daemon = await connect_pinned(make_daemon, short_tmp, raw, keepalive=60)
+        api = await api_for(daemon)
+        slow, fast = [(await api.call("devices.ping", {"id": raw.id}))["rttMs"] for _ in range(2)]
+        assert 200 <= slow < 400 and fast < 100
+        with pytest.raises(ApiError) as e:
+            await api.call("devices.ping", {"id": raw.id})
+        assert (e.value.code, e.value.message) == ("timeout", "no pong within 0.5 s")
+        session = daemon.devices[raw.id].session
+        ping = asyncio.ensure_future(api.call("devices.ping", {"id": raw.id}))
+        await until(lambda: session._pongs)
+        await session.close("test: link lost")
+        with pytest.raises(ApiError) as e:
+            await asyncio.wait_for(ping, 0.3)
+        assert e.value.code == "not_connected" and "link lost" in e.value.message
+        assert session._pongs == {}
+
+
 async def test_probe_deadline_follows_a_link_that_turned_slow_at_once(make_daemon, short_tmp, api_for, monkeypatch):
     """The handshake saw a fast link; one pong taking 0.25 s is enough to stretch a 0.1 s action probe."""
     monkeypatch.setattr(session_mod, "PROBE_FLOWING", 0.05)
@@ -443,6 +474,7 @@ async def test_pinned_but_offline_device_errors(make_daemon, short_tmp, api_for)
         ("activities.action", {"device": dev["id"], "activity": "a", "action": "b"}),
         ("devices.disconnect", {"id": dev["id"]}),
         ("devices.connect", {"id": dev["id"]}),
+        ("devices.ping", {"id": dev["id"]}),
     ):
         with pytest.raises(ApiError) as e:
             await api.call(method, params)

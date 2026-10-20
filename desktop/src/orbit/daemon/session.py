@@ -169,6 +169,8 @@ class Session:
         # once, a shorter one pulls it down slowly. And the last ping (req, sent at).
         self.rtt = 0.0
         self._ping_sent: tuple[int, float] | None = None
+        # Ping req -> resolved with the arrival time of its pong (``ping``).
+        self._pongs: dict[int, asyncio.Future] = {}
         self._pending: dict[int, asyncio.Future] = {}
         # The image being reassembled from parts: key, mime, part count, bytes so far, parts so far.
         self._art: tuple[str, str, int, bytearray, int] | None = None
@@ -319,6 +321,19 @@ class Session:
             self._verified.set()
             self.daemon.session_verified(self)
 
+    async def ping(self) -> float:
+        """Seconds from sending a ping until its pong arrived."""
+        if self.closed.is_set():
+            raise LinkDown(f"session closed: {self.close_reason}", sent=False)
+        req = self._ping_req + 1
+        pong = self._pongs[req] = asyncio.get_running_loop().create_future()
+        try:
+            sent = time.monotonic()
+            await self._ping()
+            return await pong - sent
+        finally:
+            del self._pongs[req]
+
     async def _ping(self) -> None:
         self._ping_req += 1
         self._ping_sent = (self._ping_req, time.monotonic())
@@ -438,6 +453,9 @@ class Session:
         for req, fut in self._pending.items():
             if not fut.done():
                 fut.set_exception(LinkDown(f"session closed: {self.close_reason}", sent=outcomes[req]))
+        for fut in self._pongs.values():
+            if not fut.done():
+                fut.set_exception(LinkDown(f"session closed: {self.close_reason}", sent=True))
         self.closed.set()
         self._verified.set()
         self.daemon.session_closed(self)
@@ -530,6 +548,8 @@ class Session:
                 if self._ping_sent and msg.get("req") == self._ping_sent[0]:
                     sample = time.monotonic() - self._ping_sent[1]
                     self.rtt = max(sample, self.rtt + (sample - self.rtt) / 8)
+                if isinstance(req := msg.get("req"), int) and (pong := self._pongs.get(req)) and not pong.done():
+                    pong.set_result(time.monotonic())
                 self._answered(ping=msg.get("req"))
             case "bye":
                 self.close_reason = f"phone said bye ({msg.get('reason') or 'no reason'})"

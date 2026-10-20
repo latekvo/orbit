@@ -203,6 +203,8 @@ class ApiServer:
                 return await d.api_connect(params)
             case "devices.disconnect":
                 return await d.api_disconnect(params)
+            case "devices.ping":
+                return await d.api_ping(params)
             case "devices.forget":
                 return await d.api_forget(params)
             case "pairing.list":

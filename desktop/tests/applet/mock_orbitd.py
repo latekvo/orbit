@@ -1200,6 +1200,14 @@ class MockOrbitd:
 
         return self._mutate(apply)
 
+    def _m_devices_ping(self, params):
+        dev = self._device(self._str_param(params, "id"))
+        if dev is None:
+            raise ApiError("not_found", "unknown device")
+        if not dev["connected"]:
+            raise ApiError("not_connected", "not connected")
+        return {"rttMs": 1.0}
+
     def _m_devices_forget(self, params):
         device_id = self._str_param(params, "id")
 
@@ -1277,6 +1285,7 @@ class MockOrbitd:
         "devices.list": _m_devices_list,
         "devices.connect": _m_devices_connect,
         "devices.disconnect": _m_devices_disconnect,
+        "devices.ping": _m_devices_ping,
         "devices.forget": _m_devices_forget,
         "pairing.list": _m_pairing_list,
         "pairing.respond": _m_pairing_respond,

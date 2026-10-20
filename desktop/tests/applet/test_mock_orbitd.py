@@ -315,12 +315,15 @@ def test_disconnect_hides_activities_and_reconnect_restores(mock, client):
     assert all(a["device"] != PIXEL_8 for a in client.call("activities.list"))
     dev = next(d for d in mock.devices if d["id"] == PIXEL_8)
     assert dev["connected"] is False and dev["transport"] is None
+    assert client.error("devices.ping", {"id": PIXEL_8}) == "not_connected"
     client.call("devices.connect", {"id": PIXEL_8})
     assert len(client.call("activities.list")) == n
     assert next(d for d in mock.devices if d["id"] == PIXEL_8)["transport"] == "lan"
+    assert client.call("devices.ping", {"id": PIXEL_8}) == {"rttMs": 1.0}
     assert client.call("devices.forget", {"id": PIXEL_8}) is True
     assert all(a["device"] != PIXEL_8 for a in mock.activities)
     assert client.error("devices.forget", {"id": PIXEL_8}) == "not_found"
+    assert client.error("devices.ping", {"id": PIXEL_8}) == "not_found"
 
 
 def test_stop_gives_eof_and_restart_keeps_state(mock, client, sock_path):
