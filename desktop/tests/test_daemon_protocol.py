@@ -104,6 +104,13 @@ async def test_ping_deadline_allows_for_the_round_trip_time(make_daemon, short_t
             if msg["t"] == "ping":
                 asyncio.ensure_future(pong(msg["req"]))
 
+    real_open = core_mod.open_tcp
+
+    async def slow_open(host, port):
+        await asyncio.sleep(rtt)
+        return await real_open(host, port)
+
+    monkeypatch.setattr(core_mod, "open_tcp", slow_open)
     async with RawPhone(slow_link, handshake_delay=rtt) as phone:
         daemon = await connect_pinned(make_daemon, short_tmp, phone, keepalive=0.6, stall_after=0.3, dead_after=10)
         session = daemon.devices[phone.id].session
@@ -145,6 +152,35 @@ async def test_probe_deadline_follows_a_link_that_turned_slow_at_once(make_daemo
         assert await api.call("activities.action", {"device": phone.id, "activity": "x", "action": "go"}) == {
             "ok": True
         }
+
+
+async def test_late_handshake_answer_does_not_stretch_probe_deadlines(make_daemon, short_tmp, api_for, monkeypatch):
+    """The phone's app answered the handshake 1 s late over a fast TCP connect (it was frozen, or a NAT or
+    adb forward accepted for it): an action it never answers still drops the session after the action
+    probe, not after 4 handshake times."""
+    monkeypatch.setattr(session_mod, "PROBE_FLOWING", 0.05)  # the snapshot just before would pass as "flowing"
+
+    async def goes_silent(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+        await ch.recv()
+        act = {"id": "x", "kind": "generic", "title": "X", "actions": [{"id": "go", "label": "Go"}]}
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [act]})
+        while True:
+            await ch.recv()
+
+    async with RawPhone(goes_silent, handshake_delay=1.0) as phone:
+        daemon = await connect_pinned(
+            make_daemon, short_tmp, phone, keepalive=10, stall_after=10, dead_after=10, action_probe=0.2
+        )
+        api = await api_for(daemon)
+        await until(lambda: daemon.devices[phone.id].activities)
+        session = daemon.devices[phone.id].session
+        loop = asyncio.get_running_loop()
+        started = loop.time()
+        with pytest.raises(ApiError) as e:
+            await api.call("activities.action", {"device": phone.id, "activity": "x", "action": "go"})
+        assert e.value.code == "failed"
+        assert session.closed.is_set() and loop.time() - started < 1.5, session.close_reason
 
 
 async def test_handshake_deadline_allows_for_a_slow_tcp_connect(make_daemon, api_for, monkeypatch):

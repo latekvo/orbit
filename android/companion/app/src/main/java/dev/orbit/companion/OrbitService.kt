@@ -46,6 +46,7 @@ class OrbitService : Service() {
             return
         }
         foreground = true
+        orbit.startServing()
         val server = TcpServer(orbit)
         val port = server.start()
         tcp = server
@@ -99,7 +100,7 @@ class OrbitService : Service() {
     override fun onDestroy() {
         EventLog.log("service destroyed")
         runCatching { unregisterReceiver(btReceiver) }
-        val ending = orbit.shutdownSessions("service stopped")
+        val ending = orbit.stopServing("service stopped")
         nsd?.stop()
         tcp?.stop()
         // Stopping BLE drops its links at once, so let their `bye` go out first.

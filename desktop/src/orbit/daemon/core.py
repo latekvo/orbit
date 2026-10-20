@@ -919,9 +919,10 @@ class Daemon:
             raise ApiError("failed", f"cannot connect to {route.address}: {e}") from None
         stream = FrameStream(WatchedReader(stream.reader), WatchedWriter(stream.writer))
         session = None
+        connect_rtt = time.monotonic() - opened
         timeout = self.connect_timeout
         if route.kind == "lan":  # a TCP connect takes a round trip: allow for slow links as probes do
-            timeout += PROBE_RTTS * (time.monotonic() - opened)
+            timeout += PROBE_RTTS * connect_rtt
         try:
             started = time.monotonic()
             channel = await asyncio.wait_for(initiate(stream, self.identity, self.name, self.platform), timeout)
@@ -932,7 +933,9 @@ class Daemon:
             if route.prefix and not peer.id.startswith(route.prefix):
                 raise ApiError("failed", f"{route.address} is device {peer.id}, not the advertised {route.prefix}")
             session = Session(self, channel, route.kind, route.address, route.manual)
-            session.rtt = time.monotonic() - started  # commit -> hello
+            # Over LAN the connect is the network's round trip; the handshake also waits for the phone's
+            # app, which can answer seconds late (frozen, or a NAT / adb forward accepted for it).
+            session.rtt = connect_rtt if route.kind == "lan" else time.monotonic() - started
             session.local_paired = self.store.is_pinned(peer.id, peer.static)
             known = self.devices.get(peer.id)
             art = list(known.art)[-ART_MAX_ENTRIES:] if known and session.local_paired else []

@@ -104,29 +104,50 @@ class Orbit private constructor(private val context: Context) : SessionHost {
         if (transports.value.serviceRunning) OrbitService.start(context, OrbitService.ACTION_RENAME, source = "rename")
     }
 
+    private val servingLock = Any()
+    private var serving = false
+
+    /** Lets [startSession] admit sessions, until [stopServing]. */
+    fun startServing() = synchronized(servingLock) { serving = true }
+
     /**
-     * Runs a responder session over [stream] on a background thread. A session from a network
-     * [address] counts against the unpaired-session limits; beyond them the oldest unpaired one closes.
+     * Stops admitting sessions, then sends `bye` on every one and closes it once flushed; returns
+     * those sessions. A peer that reconnects on the `bye` is refused.
+     */
+    fun stopServing(reason: String): List<ResponderSession> =
+        synchronized(servingLock) {
+            serving = false
+            sessions.values.toList()
+        }.onEach { it.shutdown(reason) }
+
+    /**
+     * Runs a responder session over [stream] on a background thread, or closes [stream] while not
+     * serving. A session from a network [address] counts against the unpaired-session limits;
+     * beyond them the oldest unpaired one closes.
      */
     fun startSession(stream: ByteStream, transport: String, address: String? = null) {
         val session = ResponderSession(
             stream, transport, identity, deviceName, "android", hub, this, scheduler,
             elapsed = SystemClock::elapsedRealtime, artSizer = artSizer,
         )
+        synchronized(servingLock) {
+            if (!serving) {
+                EventLog.log("refused a $transport connection: not serving")
+                runCatching { stream.close() }
+                return
+            }
+            sessions[session.id] = session
+        }
         address?.let { unauthenticated.admit(session.id, it) }?.let { evicted ->
             EventLog.log("closing unpaired session $evicted for one from $address: too many unpaired sessions")
             sessions[evicted]?.shutdown("too many unpaired sessions")
         }
-        sessions[session.id] = session
         EventLog.log("session ${session.id} open ($transport)")
         sessionChanged(session)
         sessionThreads.execute { session.run() }
     }
 
     fun session(id: Long): ResponderSession? = sessions[id]
-
-    /** Sends `bye` on every session and closes it once flushed; returns those sessions. */
-    fun shutdownSessions(reason: String): List<ResponderSession> = sessions.values.toList().onEach { it.shutdown(reason) }
 
     /** Closes sessions using [transport] (e.g. when BLE goes away). */
     fun closeSessions(transport: String, reason: String) =

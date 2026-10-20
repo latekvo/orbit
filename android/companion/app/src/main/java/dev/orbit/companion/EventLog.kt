@@ -59,7 +59,8 @@ object EventLog {
         val previous = when {
             Build.VERSION.SDK_INT < 30 -> "unknown (API < 30)"
             exit == null -> "none recorded"
-            exit.timestamp == prefs.getLong(KEY_LAST_EXIT, 0) -> "not recorded"
+            // The newest record can be one reported before, or even older (seen after a reboot, which adds none).
+            exit.timestamp <= prefs.getLong(KEY_LAST_EXIT, 0) -> "not recorded"
             else -> {
                 prefs.edit().putLong(KEY_LAST_EXIT, exit.timestamp).apply()
                 "${exitReason(exit.reason)} at ${time.format(Date(exit.timestamp))}, status ${exit.status}, " +
@@ -69,7 +70,7 @@ object EventLog {
         log("process start; previous process: $previous")
     }
 
-    private fun exitReason(reason: Int) = when (reason) {
+    internal fun exitReason(reason: Int) = when (reason) {
         ApplicationExitInfo.REASON_EXIT_SELF -> "exit_self"
         ApplicationExitInfo.REASON_SIGNALED -> "signaled"
         ApplicationExitInfo.REASON_LOW_MEMORY -> "low_memory"
@@ -83,6 +84,9 @@ object EventLog {
         ApplicationExitInfo.REASON_USER_STOPPED -> "user_stopped"
         ApplicationExitInfo.REASON_DEPENDENCY_DIED -> "dependency_died"
         ApplicationExitInfo.REASON_OTHER -> "other"
+        ApplicationExitInfo.REASON_FREEZER -> "freezer"
+        ApplicationExitInfo.REASON_PACKAGE_STATE_CHANGE -> "package_state_change"
+        ApplicationExitInfo.REASON_PACKAGE_UPDATED -> "package_updated"
         else -> "reason $reason"
     }
 
