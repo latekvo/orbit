@@ -105,8 +105,8 @@ async def test_phone_accepts_while_laptop_cannot_hear(rig):
 
 
 async def test_laptop_accepts_while_phone_cannot_hear(rig):
-    """Phone accepts first; then laptop -> phone stalls; the laptop user accepts (the laptop pins at
-    once). The phone never hears it. What does the user see on the laptop?"""
+    """Phone accepts first; then laptop -> phone stalls; the laptop user accepts. The phone never
+    hears it, so it never pins: nor may the laptop, or it shows a pairing that then breaks."""
     phone, proxy, laptop = await rig()
     await phone.cmd("upsert", activity=MEDIA)
     t0 = time.monotonic()
@@ -120,19 +120,21 @@ async def test_laptop_accepts_while_phone_cannot_hear(rig):
     proxy.up.set(mode="pause")
     t1 = time.monotonic()
     await laptop.call("pairing.respond", {"session": p["session"], "accept": True})
-    t_paired = await laptop.wait_event(
-        "devices.changed", lambda d: any(x["id"] == dev and x["paired"] for x in d["devices"]), 5, t1
-    )
     closed = await phone.wait_event("session_closed", 60, t1)
     t_pc = phone.events("session_closed", t1)[0][0]
     proxy.forget_all()
     proxy.up.set(mode="pass")
-    t_unpaired = await laptop.wait_event(
-        "devices.changed", lambda d: not any(x["id"] == dev and x["paired"] for x in d["devices"]), 120, t_paired
-    )
     await asyncio.sleep(1)
+    shown_paired = [
+        round(t - t1, 2)
+        for t, e, d in laptop.events
+        if t >= t1 and e == "devices.changed" and any(x["id"] == dev and x["paired"] for x in d["devices"])
+    ]
+    unpinned = [t for _, t in laptop.lines if "trust" in t or "unpin" in t]
     log(
-        f"laptop accepted, phone deaf: laptop showed paired after {t_paired - t1:.2f}s (activities {len(laptop.activities())}); phone closed at {t_pc - t1:.1f}s ({closed['reason']}); laptop unpaired itself at {t_unpaired - t1:.1f}s; phone pinned: {bool(phone.events('pinned', t0))}"
+        f"laptop accepted, phone deaf: laptop showed paired at {shown_paired} s; phone closed at {t_pc - t1:.1f}s ({closed['reason']}); phone pinned: {bool(phone.events('pinned', t0))}"
     )
     log("laptop states", [(round(t - t1, 1), s) for t, s in laptop.state_log(dev, t1)])
-    log("orbitd log", [t for _, t in laptop.lines if "trust" in t or "unpin" in t][-2:])
+    assert not phone.events("pinned", t0)
+    assert not shown_paired, "the laptop showed a pairing the phone never completed"
+    assert not unpinned, unpinned
