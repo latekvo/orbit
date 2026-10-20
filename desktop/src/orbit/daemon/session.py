@@ -162,8 +162,8 @@ class Session:
         self.suspect = False
         self._req = 0
         self._ping_req = 0
-        # Round-trip time, seeded by the handshake: a longer pong takes over at once, a shorter one
-        # pulls it down slowly. And the last ping (req, sent at).
+        # Round-trip time, seeded by the TCP connect (BLE: the handshake): a longer pong takes over at
+        # once, a shorter one pulls it down slowly. And the last ping (req, sent at).
         self.rtt = 0.0
         self._ping_sent: tuple[int, float] | None = None
         self._pending: dict[int, asyncio.Future] = {}
