@@ -6,9 +6,9 @@ import argparse
 import asyncio
 import contextlib
 import json
+import os
 import re
 import sys
-import threading
 from pathlib import Path
 from typing import Any
 
@@ -174,19 +174,28 @@ def parse_address(text: str) -> dict[str, Any] | None:
 
 
 async def ask(prompt: str) -> str | None:
-    """input() that Ctrl-C can interrupt: a daemon thread does not keep the process alive. None on EOF."""
+    """input() on the event loop, so Ctrl-C interrupts it and no thread is left reading stdin. None on EOF."""
+    sys.stdout.write(prompt)
+    sys.stdout.flush()
     loop = asyncio.get_running_loop()
-    answer: asyncio.Future[str | None] = loop.create_future()
-
-    def read() -> None:
+    fd = sys.stdin.fileno()
+    line = bytearray()
+    while not line.endswith(b"\n"):
+        ready = loop.create_future()
         try:
-            line: str | None = input(prompt)
-        except EOFError:
-            line = None
-        loop.call_soon_threadsafe(lambda: answer.done() or answer.set_result(line))
-
-    threading.Thread(target=read, daemon=True).start()
-    return await answer
+            loop.add_reader(fd, lambda f=ready: f.done() or f.set_result(None))
+        except OSError:  # not pollable (regular file, /dev/null on macOS): reading never blocks
+            ready.set_result(None)
+        else:
+            try:
+                await ready
+            finally:
+                loop.remove_reader(fd)
+        byte = os.read(fd, 1)  # one byte at a time leaves the rest of the input for the next question
+        if not byte:
+            return line.decode(errors="replace") if line else None
+        line += byte
+    return line[:-1].decode(errors="replace")
 
 
 def pairing_line(p: dict[str, Any]) -> str:
