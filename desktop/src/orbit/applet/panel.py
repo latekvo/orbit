@@ -422,6 +422,7 @@ class DevicesPage(QWidget):
         self.bluetooth.setObjectName("bluetoothNotice")
         self.bluetooth.setProperty("role", "notice")
         self.bluetooth.setWordWrap(True)
+        self.bluetooth.setContentsMargins(8, 2, 8, 2)
         self.bluetooth.hide()
         self.list.addWidget(self.bluetooth)
         self.rows_box = QVBoxLayout()
