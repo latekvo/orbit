@@ -157,6 +157,11 @@ async def _paused(api, act_id):
     return a if a and a["media"]["state"] == "paused" else None
 
 
+async def _with_art(api, act_id):
+    a = await _activity(api, act_id)
+    return a if a and "artKey" in a and "iconKey" in a else None
+
+
 async def _gone(api, act_id):
     return await _activity(api, act_id) is None
 
@@ -166,7 +171,8 @@ async def test_art_is_cached_and_served(make_daemon, make_phone, api_for):
     daemon = await make_daemon()
     api = await api_for(daemon)
     await pair(api, phone)
-    media = await until(lambda: _activity(api, "media:com.example.music"))
+    # Listed activities carry art keys only once the art, which may follow them, has arrived.
+    media = await until(lambda: _with_art(api, "media:com.example.music"))
     for key in (media["artKey"], media["iconKey"]):
         art = await api.call("art.get", {"device": phone.device_id, "key": key})
         raw = base64.b64decode(art["data"])
