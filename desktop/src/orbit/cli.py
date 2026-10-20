@@ -48,8 +48,9 @@ def describe_activity(a: dict[str, Any], now: int, device_name: str) -> list[str
     if a.get("subtitle"):
         head += f" - {a['subtitle']}"
     app = (a.get("app") or {}).get("name") or (a.get("app") or {}).get("id") or "?"
+    stale = " (stale: phone reconnecting)" if a.get("stale") else ""
     lines = [
-        f"[{a.get('kind', 'generic')}] {head}",
+        f"[{a.get('kind', 'generic')}] {head}{stale}",
         f"    id {a['id']}  app {app}  on {device_name} ({a['device'][:8]})",
     ]
     if a.get("text"):
@@ -87,7 +88,8 @@ def device_line(d: dict[str, Any]) -> str:
         paired += " (provisional id from BLE advertisement)"
     seen = ",".join(d.get("discovered") or []) or "-"
     who = f"{d['name'] or '?'} ({d.get('platform') or '?'})"
-    return f"{d['id']}  {who}  {paired}, {state}  addr {d.get('address') or '-'}  seen {seen}"
+    line = f"{d['id']}  {who}  {paired}, {state}  addr {d.get('address') or '-'}  seen {seen}"
+    return line + (f"\n    problem: {d['problem']}" if d.get("problem") else "")
 
 
 def parse_value(text: str, force_string: bool) -> Any:
@@ -123,6 +125,10 @@ async def wait_for(c: LocalClient, event_name: str, predicate, timeout: float) -
 async def cmd_status(c: LocalClient, args: argparse.Namespace) -> None:
     st = await c.call("status")
     print(f"orbitd {st['version']} on {st['name']} (id {st['deviceId']})")
+    for label, key in (("Wi-Fi discovery (mDNS)", "lan"), ("Bluetooth", "ble")):
+        if key in st:
+            error = st.get(key + "Error")
+            print(f"{label}: {st[key]}" + (f" ({error})" if error else ""))
     devices = await c.call("devices.list")
     acts = await c.call("activities.list")
     connected = [d for d in devices if d["connected"]]
@@ -323,6 +329,7 @@ async def cmd_watch(c: LocalClient, args: argparse.Namespace) -> None:
             for a in data["activities"]:
                 print("\n".join("   " + line for line in describe_activity(a, now, names.get(a["device"], "?"))))
         sys.stdout.flush()
+    raise ConnectionError("orbitd closed the connection")
 
 
 COMMANDS = {
@@ -392,6 +399,9 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(1)
     except ConnectionError as e:
         print(f"orbit: {e}", file=sys.stderr)
+        sys.exit(2)
+    except TimeoutError:
+        print("orbit: orbitd did not answer (is it stopped or stuck?)", file=sys.stderr)
         sys.exit(2)
     except KeyboardInterrupt:
         sys.exit(130)

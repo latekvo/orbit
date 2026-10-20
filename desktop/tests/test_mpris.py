@@ -381,7 +381,11 @@ async def test_bridge_filters_activities(tmp_path):
     assert made[0].view.identity == "Spotify"
     await bridge.handle("devices.changed", {"devices": [{"id": DEV, "name": "Pixel 8", "connected": True}]})
     assert made[0].view.identity == "Spotify (Pixel 8)"
-    await bridge.handle("devices.changed", {"devices": [{"id": DEV, "name": "Pixel 8", "connected": False}]})
+    reconnecting = {"id": DEV, "name": "Pixel 8", "connected": False, "state": "reconnecting"}
+    await bridge.handle("devices.changed", {"devices": [reconnecting]})
+    assert list(bridge.players) == [(DEV, MEDIA)] and not made[0].closed
+    offline = {**reconnecting, "state": "offline"}
+    await bridge.handle("devices.changed", {"devices": [offline]})
     assert not bridge.players and made[0].closed
 
 

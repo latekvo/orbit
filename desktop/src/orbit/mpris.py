@@ -33,7 +33,7 @@ SEEK_JUMP_US = 1_500_000
 ART_CACHE_FILES = 64
 ART_RETRY_S = 60.0
 RECONNECT_MIN_S = 0.5
-RECONNECT_MAX_S = 10.0
+RECONNECT_MAX_S = 2.0
 
 _STATUS = {"playing": "Playing", "paused": "Paused", "buffering": "Paused"}
 _ART_EXT = {"image/png": ".png", "image/jpeg": ".jpg"}
@@ -294,6 +294,14 @@ class ActionFailed(Exception):
     pass
 
 
+def _present(device: dict | None) -> bool:
+    """Players stay while the device is connected or briefly reconnecting (its media keys then wait for it).
+
+    A device orbitd has not described yet counts as connected.
+    """
+    return device is None or device.get("connected", True) or device.get("state") == "reconnecting"
+
+
 class Bridge:
     """Mirrors orbitd's media activities into players made by ``player_factory``."""
 
@@ -348,8 +356,7 @@ class Bridge:
 
     async def sync(self) -> None:
         async with self._lock:
-            # A device orbitd has not described yet counts as connected.
-            wanted = {k: a for k, a in self._activities.items() if self._devices.get(k[0], {}).get("connected", True)}
+            wanted = {k: a for k, a in self._activities.items() if _present(self._devices.get(k[0]))}
             for k in [k for k in self.players if k not in wanted]:
                 log.info("removing player %s", bus_name(*k))
                 await self.players.pop(k).close()
