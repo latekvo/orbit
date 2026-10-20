@@ -215,10 +215,11 @@ class MainActivity : ComponentActivity() {
         val bars = WindowInsets.safeDrawing.asPaddingValues()
         val dir = LocalLayoutDirection.current
         LazyColumn(
-            Modifier.fillMaxSize(),
+            // The status bar has no scrim: scroll beneath it would put text under its icons.
+            Modifier.fillMaxSize().padding(top = bars.calculateTopPadding()),
             contentPadding = PaddingValues(
                 start = bars.calculateStartPadding(dir) + 16.dp, end = bars.calculateEndPadding(dir) + 16.dp,
-                top = bars.calculateTopPadding() + 16.dp, bottom = bars.calculateBottomPadding() + 16.dp,
+                top = 16.dp, bottom = bars.calculateBottomPadding() + 16.dp,
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
