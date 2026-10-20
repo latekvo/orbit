@@ -290,6 +290,8 @@ async def main(names: list[str]) -> None:
         except Exception as e:  # report and continue
             out = {"error": repr(e)}
         out = {"scenario": name, "wall_s": round(time.monotonic() - t, 1), **out}
+        for d in Path("/tmp").glob("cad-*"):
+            __import__("shutil").rmtree(d, ignore_errors=True)
         print(json.dumps(out, default=str), flush=True)
 
 
