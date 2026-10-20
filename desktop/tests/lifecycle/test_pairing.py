@@ -207,8 +207,10 @@ async def test_drop_after_laptop_pinned_but_phone_did_not(lab):
         f"8 s later {later and (later['paired'], later['state'])}; states {states}; "
         f"laptop pins {pins(d.config)}; phone pins {pins(p.config)}; log {[w[1][-70:] for w in warn]}"
     )
-    # Recoverable without manual cleanup: both ends agree the device is not paired.
+    # Both ends agree the device is not paired, and the laptop never said it was.
     assert pins(d.config) == [] and pins(p.config) == []
+    assert right_after is None or not right_after["paired"]
+    assert not warn and (later is None or not later.get("problem"))
     await proxy.close()
 
 

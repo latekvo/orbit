@@ -142,8 +142,11 @@ Pairing:
 2. Both devices display the 6-digit `sas` and ask their user to confirm it matches the
    code on the other device.
 3. Each side sends `{"t":"pair_decision","accepted":<bool>}` once its user decides.
-4. When a side has sent *and* received `accepted:true` it pins the peer, and the session
-   becomes paired (R then sends `snapshot`). Any `accepted:false` -> both close.
+4. When R has sent *and* received `accepted:true` it pins the peer, the session becomes paired
+   and R sends `snapshot`. I pins the peer once it has sent and received `accepted:true` and
+   then receives a message that needs a paired session (R's `snapshot` or `art`): if the link
+   fails between the two decisions, I is never left trusting a phone that does not trust it
+   (R may be; pairing again replaces its pin). Any `accepted:false` -> both close.
 5. Pairing that is not completed within 120 s is abandoned (close).
 
 R closes a session that is neither paired nor pairing 30 s after the handshake, after sending

@@ -143,6 +143,32 @@ async def test_snapshot_right_after_our_late_accept_is_kept(make_daemon, api_for
         assert "error" not in replies
 
 
+async def test_pairing_lost_before_the_phone_had_our_accept_pins_nothing(make_daemon, api_for):
+    """The phone accepted first; our accept never reached it (the link died): it does not trust us, so nor do we."""
+    lost = asyncio.Event()
+
+    async def script(ch):
+        await ready(ch, paired=False)
+        assert (await ch.recv())["t"] == "pair_request"
+        await ch.send({"t": "pair_decision", "accepted": True})
+        await lost.wait()
+        ch.close()
+
+    async with RawPhone(script) as phone:
+        daemon = await make_daemon()
+        api = await api_for(daemon)
+        await api.call("devices.connect", {"host": "127.0.0.1", "port": phone.port})
+        (pairing,) = await until(lambda: [p for p in daemon.pairings_json() if p["remoteAccepted"]])
+        await api.call("pairing.respond", {"session": pairing["session"], "accept": True})
+        await asyncio.sleep(0.2)
+        assert daemon.store.get(phone.id) is None
+        assert [(p["localAccepted"], p["remoteAccepted"]) for p in daemon.pairings_json()] == [(True, True)]
+        assert [d["paired"] for d in await api.call("devices.list") if d["id"] == phone.id] == [False]
+        lost.set()
+        await until(lambda: not daemon.pairings_json())
+        assert daemon.store.get(phone.id) is None
+
+
 async def test_forget_while_phone_closes_on_unpair(make_daemon, short_tmp, api_for, slow_transport):
     art = b"img"
     key = hashlib.sha256(art).hexdigest()[:16]

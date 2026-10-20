@@ -251,11 +251,9 @@ class Session:
             raise ApiError("not_found", "no pairing pending for this session")
         if self.pairing.local is not None:
             raise ApiError("bad_request", "this pairing was already answered")
+        # Set before the send yields: the phone may send its snapshot as soon as it has our decision.
         self.pairing.local = accept
         self.daemon.changed("pairing")
-        if accept:
-            # Before the send yields: the phone may send its snapshot as soon as it has our decision.
-            self._maybe_pair_complete()
         await self.send({"t": "pair_decision", "accepted": accept})
         if not accept:
             await self.close("pairing rejected locally")
@@ -490,15 +488,18 @@ class Session:
         if not self.paired:
             await self.close("pairing timed out", bye=True)
 
-    def _maybe_pair_complete(self) -> None:
-        if self.pairing and self.pairing.local and self.pairing.remote:
-            self.pairing = None
-            self.local_paired = self.remote_paired = True
-            self.daemon.pair_completed(self)
+    def _phone_completed_pairing(self) -> bool:
+        """Both accepted and the phone sent paired traffic (its art or snapshot): it pinned first (spec 3.4)."""
+        if not (self.pairing and self.pairing.local and self.pairing.remote):
+            return False
+        self.pairing = None
+        self.local_paired = self.remote_paired = True
+        self.daemon.pair_completed(self)
+        return True
 
     async def _dispatch(self, msg: dict[str, Any]) -> None:
         t = msg["t"]
-        if not self.paired and t not in UNPAIRED_ALLOWED:
+        if not self.paired and t not in UNPAIRED_ALLOWED and not self._phone_completed_pairing():
             await self.send({"t": "error", "code": "not_paired", "message": f"'{t}' requires a paired session"})
             return
         d = self.daemon
@@ -522,7 +523,6 @@ class Session:
                     return
                 self.pairing.remote = True
                 d.changed("pairing")
-                self._maybe_pair_complete()
             case "snapshot":
                 now = self._note_clock(msg)
                 acts = msg.get("activities")
