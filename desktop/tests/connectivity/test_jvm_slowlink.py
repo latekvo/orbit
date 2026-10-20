@@ -41,8 +41,8 @@ async def test_action_result_stuck_behind_art_burst(rig):
 
 
 async def test_reconnect_snapshot_with_art_on_slow_link(rig):
-    """After a drop, the snapshot follows every art it references: on a slow link the laptop shows
-    the old, stale activities (and actions on them time out) until all art has crawled through."""
+    """After a drop on a slow link the activities are fresh again at once, and an action is answered:
+    the phone does not resend the art the laptop still holds (spec 3.4)."""
     phone, proxy, laptop = await rig()
     ble_like(proxy)
     for i in range(4):
@@ -61,3 +61,4 @@ async def test_reconnect_snapshot_with_art_on_slow_link(rig):
         f"slow-link reconnect: connected {t_con - t0:.1f}s, activities fresh {t_fresh - t0:.1f}s; action meanwhile {dt:.1f}s {r!r}"
     )
     assert t_fresh - t_con < 5, "activities stay stale long after the session is back"
+    assert r == {"ok": True}, f"action right after the reconnect: {r!r} after {dt:.1f} s"

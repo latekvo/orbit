@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 import base64
-import binascii
 import contextlib
 import errno
 import fcntl
@@ -1155,20 +1154,8 @@ class Daemon:
         if (dev := self._live(session)) and dev.activities.pop(activity_id, None) is not None:
             self.changed("activities")
 
-    def store_art(self, session: Session, msg: dict[str, Any]) -> None:
-        dev = self._live(session)
-        key, mime, data = msg.get("key"), msg.get("mime"), msg.get("data")
-        if (
-            dev is None
-            or not isinstance(key, str)
-            or mime not in ("image/png", "image/jpeg")
-            or not isinstance(data, str)
-        ):
-            return
-        try:
-            raw = base64.b64decode(data, validate=True)
-        except (binascii.Error, ValueError):
-            log.warning("art %s from %s is not valid base64", key, dev.id)
+    def store_art(self, session: Session, key: str, mime: str, raw: bytes) -> None:
+        if (dev := self._live(session)) is None:
             return
         if hashlib.sha256(raw).hexdigest()[:16] != key:
             log.warning("art key %s from %s does not match its data", key, dev.id)

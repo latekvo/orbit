@@ -8,6 +8,7 @@ import stat
 
 from daemon_helpers import until
 
+from orbit.daemon.core import ART_FIELDS as ART
 from orbit.store import PeerStore
 
 
@@ -225,14 +226,14 @@ async def test_reconnect_does_not_resend_art_the_laptop_holds(make_daemon, make_
     api = await api_for(daemon)
     await pair(api, phone)
     dev = daemon.devices[phone.device_id]
-    await until(lambda: dev.art)
+    await until(lambda: dev.activities and all(a[k] in dev.art for a in dev.activities.values() for k in ART if k in a))
     received = []
     store = core.Daemon.store_art
     monkeypatch.setattr(
-        core.Daemon, "store_art", lambda self, s, msg: (received.append(msg["key"]), store(self, s, msg))
+        core.Daemon, "store_art", lambda self, s, key, *art: (received.append(key), store(self, s, key, *art))
     )
     old = dev.session
     old.channel.close()  # the link drops; the paired phone is reconnected at once
     await until(lambda: dev.session not in (None, old) and not dev.stale)
     assert received == []
-    assert all(a.get("artKey") in dev.art for a in dev.activities.values() if a.get("artKey"))
+    assert all(a[k] in dev.art for a in dev.activities.values() for k in ART if k in a)

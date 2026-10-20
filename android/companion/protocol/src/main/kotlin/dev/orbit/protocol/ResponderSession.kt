@@ -83,11 +83,16 @@ class ResponderSession(
     private val sendOverflow = AtomicBoolean()
     private var channel: SecureChannel? = null
     private var ticker: ScheduledFuture<*>? = null
-    // Sender thread only: art written, art waiting behind other messages, art keys per activity on the wire.
+    // Sender thread only: art written (or held by the peer), art waiting behind other messages, the
+    // image going out in parts, art keys per activity on the wire.
     private val sentArt = HashSet<String>()
     private val pendingArt = LinkedHashMap<String, Art>()
+    private var artInFlight: ArtInFlight? = null
     private val wireRefs = HashMap<String, List<String>>()
     private var nextPing = 0L
+    // Sender thread only: the peer reassembles art parts; the ping whose pong lets the next art frame go.
+    private var peerTakesArtParts = false
+    private var artPing: Long? = null
 
     @Volatile var state: State = State.HANDSHAKE
         private set
@@ -175,11 +180,12 @@ class ResponderSession(
             return
         }
         when (t) {
-            "ready" -> onReady(msg.bool("paired") == true)
+            "ready" -> onReady(msg)
             "pair_request" -> startPairing()
             "pair_decision" -> onRemoteDecision(msg.bool("accepted") == true)
             "ping" -> enqueue { send(buildJsonObject { put("t", "pong"); msg["req"]?.let { put("req", it) } }) }
-            "pong", "error" -> {}
+            "pong" -> msg.long("req")?.let { req -> enqueue { if (artPing == req) artPing = null } }
+            "error" -> {}
             "bye" -> close("peer said bye")
             "unpair" -> {
                 peer?.let { host.unpin(it.id) }
@@ -190,13 +196,22 @@ class ResponderSession(
         }
     }
 
-    private fun onReady(remotePaired: Boolean) {
+    private fun onReady(msg: JsonObject) {
+        val remotePaired = msg.bool("paired") == true
+        val paired: Boolean
         synchronized(lock) {
             if (remoteReady != null || state != State.UNPAIRED) return
             remoteReady = remotePaired
-            if (!(remotePaired && localPinned)) return
+            paired = remotePaired && localPinned
         }
-        becomePaired()
+        // Art the peer still holds counts as sent (spec 3.4). Queued ahead of the snapshot.
+        val held = (msg["art"] as? JsonArray)?.take(MAX_HELD_ART)?.mapNotNull { (it as? JsonPrimitive)?.takeIf { p -> p.isString }?.content }
+        val parts = msg.bool("artParts") == true
+        enqueue {
+            peerTakesArtParts = parts
+            held?.let { sentArt += it }
+        }
+        if (paired) becomePaired()
     }
 
     private fun startPairing() {
@@ -404,23 +419,45 @@ class ResponderSession(
 
     private fun artRefs(activity: JsonObject) = ART_FIELDS.mapNotNull { activity.str(it) }
 
-    /** Superseded art (its activity moved on or went away before it was sent) is never sent. */
+    /** Superseded art (its activity moved on or went away before it was sent) is never sent, or finished. */
     private fun dropUnreferencedArt() {
-        if (pendingArt.isEmpty()) return
+        if (pendingArt.isEmpty() && artInFlight == null) return
         val live = wireRefs.values.flatten().toSet()
         pendingArt.keys.retainAll(live)
+        if (artInFlight?.art?.key !in live) artInFlight = null
+    }
+
+    private class ArtInFlight(val art: Art, val parts: Int) {
+        var next = 0
     }
 
     /**
-     * Writes queued art while no other message waits, so art delays control traffic by at most
-     * the one frame already on the link.
+     * Writes queued art while no other message waits, one frame (a part, spec 5.3) per round trip:
+     * each is followed by a ping and the next waits for its pong, so however much the link buffers,
+     * control traffic waits behind at most one art frame.
      */
     private fun sendQueuedArt() {
-        while (sender.queue.isEmpty() && state != State.CLOSED) {
-            val key = pendingArt.keys.firstOrNull() ?: return
-            val art = pendingArt.remove(key)!!
-            send(buildJsonObject { put("t", "art"); put("key", key); put("mime", art.mime); put("data", b64e(art.data)) })
-            sentArt += key
+        while (sender.queue.isEmpty() && state != State.CLOSED && artPing == null) {
+            val out = artInFlight ?: run {
+                val key = pendingArt.keys.firstOrNull() ?: return
+                val art = pendingArt.remove(key)!!
+                val parts = if (peerTakesArtParts) (art.data.size + ART_PART_BYTES - 1) / ART_PART_BYTES else 1
+                ArtInFlight(art, maxOf(parts, 1)).also { artInFlight = it }
+            }
+            val art = out.art
+            val from = out.next * ART_PART_BYTES
+            val data = if (out.parts == 1) art.data else art.data.copyOfRange(from, minOf(from + ART_PART_BYTES, art.data.size))
+            send(buildJsonObject {
+                put("t", "art"); put("key", art.key); put("mime", art.mime); put("data", b64e(data))
+                if (out.parts > 1) { put("part", out.next); put("parts", out.parts) }
+            })
+            if (++out.next == out.parts) {
+                sentArt += art.key
+                artInFlight = null
+            }
+            val req = ++nextPing
+            artPing = req
+            send(buildJsonObject { put("t", "ping"); put("req", req) })
         }
     }
 
@@ -465,6 +502,9 @@ class ResponderSession(
     companion object {
         private val nextId = AtomicLong()
         private val ART_FIELDS = listOf("iconKey", "artKey")
+        /** Image bytes per `art` part (spec 5.3). */
+        const val ART_PART_BYTES = 4096
+        private const val MAX_HELD_ART = 256
         private val MEDIA_TRANSPORT = setOf("media.play", "media.pause", "media.next", "media.previous", "media.stop", "media.seek")
         val UNPAIRED_ALLOWED = setOf("ready", "pair_request", "pair_decision", "ping", "pong", "bye", "error")
     }

@@ -62,13 +62,20 @@ class ArtDeliveryTest {
     }
 
     private class Link(val session: ResponderSession, val gate: GatedStream, val ch: SecureChannel) {
+        /** Pings are answered (art waits for their pongs) unless this is off; the last one is kept. */
+        var pongs = true
+        var unanswered: Long? = null
+
         /** The next message that is not a ping. */
         fun recv(): JsonObject {
             while (true) {
                 val m = ch.recv()
                 if (m.type != "ping") return m
+                if (pongs) pong(m.long("req")!!) else unanswered = m.long("req")
             }
         }
+
+        fun pong(req: Long) = ch.send(json("""{"t":"pong","req":$req}"""))
     }
 
     private fun connect(
@@ -76,6 +83,7 @@ class ArtDeliveryTest {
         host: SessionHost = FakeHost(),
         artSizer: ArtSizer? = null,
         timeouts: SessionTimeouts = SessionTimeouts(),
+        ready: String = """{"t":"ready","paired":true,"now":1}""",
     ): Link {
         val created = ArrayBlockingQueue<Pair<ResponderSession, GatedStream>>(1)
         threads.execute {
@@ -90,7 +98,7 @@ class ArtDeliveryTest {
         val (session, gate) = created.take()
         return Link(session, gate, ch).also {
             assertEquals("ready", it.recv().type)
-            ch.send(json("""{"t":"ready","paired":true,"now":1}"""))
+            ch.send(json(ready))
         }
     }
 
@@ -194,6 +202,66 @@ class ArtDeliveryTest {
         assertEquals(4, got.count { it.type == "upsert" })
         assertEquals(listOf(covers[2].key, covers[3].key), got.filter { it.type == "art" }.map { it.str("key") })
         assertEquals(ResponderSession.State.PAIRED, link.session.state)
+    }
+
+    @Test
+    fun artGoesOutInPartsOneFramePerRoundTrip() {
+        val partsReady = """{"t":"ready","paired":true,"artParts":true,"now":1}"""
+        val cover = Art("image/jpeg", ByteArray(3 * ResponderSession.ART_PART_BYTES + 100) { it.toByte() })
+        hub.upsert(media(artKey = cover.key), listOf(cover))
+        val link = connect(host = pinnedHost(), ready = partsReady)
+        link.pongs = false
+        assertEquals("snapshot", link.recv().type)
+        val first = link.recv()
+        assertEquals(listOf("art", 0L, 4L), listOf(first.type, first.long("part"), first.long("parts")))
+        // Its ping is not answered: no further art, while other messages still flow.
+        link.ch.send(json("""{"t":"ping","req":7}"""))
+        assertEquals("pong", link.recv().type)
+        link.pongs = true
+        link.pong(link.unanswered!!)
+        val rest = List(3) { link.recv() }
+        assertEquals(listOf(1L, 2L, 3L), rest.map { it.long("part") })
+        val data = (listOf(first) + rest).map { b64d(it.str("data")!!) }
+        assertEquals(listOf(4096, 4096, 4096, 100), data.map { it.size })
+        assertArrayEquals(cover.data, data.reduce { a, b -> a + b })
+        assertEquals(setOf(cover.key), (listOf(first) + rest).map { it.str("key") }.toSet())
+
+        // A peer that does not reassemble parts gets the whole image in one frame.
+        val whole = connect(host = pinnedHost())
+        assertEquals("snapshot", whole.recv().type)
+        val art = whole.recv()
+        assertEquals(listOf(null, null), listOf(art["part"], art["parts"]))
+        assertArrayEquals(cover.data, b64d(art.str("data")!!))
+    }
+
+    @Test
+    fun artTheLaptopHoldsIsNotResent() {
+        val held = image("image/png", 1)
+        val fresh = image("image/jpeg", 2)
+        hub.upsert(media(iconKey = held.key, artKey = fresh.key), listOf(held, fresh)) // the icon would go first
+        val link = connect(host = pinnedHost(), ready = """{"t":"ready","paired":true,"art":["${held.key}"],"now":1}""")
+        assertEquals("snapshot", link.recv().type)
+        assertEquals(fresh.key, link.recv().also { assertEquals("art", it.type) }.str("key"))
+        link.ch.send(json("""{"t":"ping","req":7}"""))
+        assertEquals("pong", link.recv().type)
+    }
+
+    @Test
+    fun imageSupersededWhileGoingOutInPartsIsAbandoned() {
+        val partsReady = """{"t":"ready","paired":true,"artParts":true,"now":1}"""
+        val first = Art("image/jpeg", ByteArray(3 * ResponderSession.ART_PART_BYTES) { 1 })
+        val second = image("image/jpeg", 2)
+        hub.upsert(media(artKey = first.key), listOf(first))
+        val link = connect(host = pinnedHost(), ready = partsReady)
+        link.pongs = false
+        assertEquals("snapshot", link.recv().type)
+        assertEquals(0L, link.recv().long("part"))
+        hub.upsert(media(artKey = second.key), listOf(second))
+        assertEquals("upsert", link.recv().type)
+        link.pongs = true
+        link.pong(link.unanswered!!)
+        val next = link.recv()
+        assertEquals(listOf("art", second.key), listOf(next.type, next.str("key")))
     }
 
     /** Variants whose bytes name the size they were made for. */

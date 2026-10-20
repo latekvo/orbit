@@ -127,7 +127,8 @@ Immediately after the key schedule, each side sends an encrypted
 peer's static key pinned. A session is **paired** iff both sides send `paired:true`.
 I's `ready` MAY carry `"art": [<key>, ...]`, the art keys it still holds from earlier sessions;
 R SHOULD then not resend those (they count as sent in this session, see `art` in 5), so a
-reconnect's snapshot is not held up behind art the laptop already has.
+reconnect's snapshot is not held up behind art the laptop already has. I's `ready` MAY carry
+`"artParts": true`: I reassembles images sent in parts (5.3).
 An initiator that connects to a specific known device MUST check that the responder's `id`
 is the expected one; a different `id` is a different, unpaired device.
 
@@ -171,7 +172,7 @@ its own clock. Media positions are valid at the message's `now`.
 | `snapshot` | R->I | `now`, `activities: [Activity]` - full replacement of the activity set |
 | `upsert` | R->I | `now`, `activity: Activity` - add or replace by `id` |
 | `remove` | R->I | `id` |
-| `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64). Sent at most once per `key` per session, possibly after the activities that reference it (5.3). `key` = first 16 hex chars of SHA-256(data). Images are at most 256x256. |
+| `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64), `part`/`parts` when the image is sent in parts (5.3). Sent at most once per `key` per session, possibly after the activities that reference it (5.3). `key` = first 16 hex chars of SHA-256(image). Images are at most 256x256. |
 | `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below) |
 | `action_result` | R->I | `req`, `ok` (bool), `error` (optional string) |
 | `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive), without handling anything read after that deadline (such as an `action` read when a frozen process resumes: the peer has given up on it). I also closes when one of its pings goes unanswered for 10 s, or an `action` for 5 s (an answer is the `pong`, the `action_result`, or data still arriving at that moment), so a silently dead link is noticed before the user's click could be delivered late. A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
@@ -245,6 +246,19 @@ Art is lower priority than every other message: a responder MAY send it after th
 `upsert` that references its key, MAY send later messages ahead of it, and MAY omit it (for
 example when the referencing activity changed before the art went out). Initiators show a
 placeholder until the art arrives.
+
+One art frame can hold up everything behind it for seconds on a slow link (BLE, bad Wi-Fi), so R
+SHOULD keep at most one on the link: after each `art` frame it sends a `ping`, and the next `art`
+frame waits for that ping's `pong`. Frames already written to a TCP socket cannot be overtaken, so
+this bounds what an `action_result` waits behind however much the network buffers.
+
+When I's `ready` carried `"artParts": true`, R SHOULD send an image over 4096 bytes in parts of at
+most 4096 bytes: each `art` frame carries `parts` (the count, at most 256), `part` (0-based) and in
+`data` that slice of the image, with `key` and `mime` repeated. The parts of an image are sent in
+order with no part of another image between them (other messages may be). I concatenates them and
+checks `key` on the whole image. I discards an incomplete image when a part does not continue it
+(including part 0 of another image, which is how R abandons an image whose activity moved on) and
+when the session ends; it MAY bound the reassembled size (orbitd: 1 MiB).
 
 Over BLE, responders SHOULD send smaller variants (Android: at most 128x128 for `artKey`, 64x64 for
 `iconKey`, a few KB each). Keys are content hashes, so a variant has its own key and never

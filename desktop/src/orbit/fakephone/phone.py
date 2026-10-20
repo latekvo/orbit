@@ -21,6 +21,8 @@ from .models import ActionError, Chat, Download, Media, Model, Timer, now_ms
 DEFAULT_PORT = 47820
 FLUSH_TIMEOUT = 2.0
 EVENT_LIMIT = 10_000
+ART_PART_BYTES = 4096  # image bytes per `art` part (spec 5.3)
+_WAKE: dict[str, Any] = {}  # wakes the writer: art may go out
 
 Prompt = Callable[["Session"], Awaitable[bool]]
 
@@ -54,6 +56,10 @@ class Session:
         self.local_decision: bool | None = None
         self.remote_decision: bool | None = None
         self._sent_art: set[str] = set()
+        self._art_parts = False  # the laptop reassembles art sent in parts (spec 5.3)
+        # Art frames go out while no other message waits, one per ping round trip (spec 5.3).
+        self._art_out: deque[dict[str, Any]] = deque()
+        self._art_ping: int | None = None
         self._out: asyncio.Queue[dict[str, Any] | None] = asyncio.Queue()
         self._closing = asyncio.Event()
         self._flush = True
@@ -78,8 +84,16 @@ class Session:
             key = activity.get(field)
             if isinstance(key, str) and key not in self._sent_art and key in self.phone.art:
                 self._sent_art.add(key)
-                data = self.phone.art[key]
-                self.send({"t": "art", "key": key, "mime": image_mime(data), "data": b64e(data)})
+                data, mime = self.phone.art[key], image_mime(self.phone.art[key])
+                if not self._art_parts or len(data) <= ART_PART_BYTES:
+                    self._art_out.append({"t": "art", "key": key, "mime": mime, "data": b64e(data)})
+                else:
+                    parts = -(-len(data) // ART_PART_BYTES)
+                    for i in range(parts):
+                        chunk = b64e(data[i * ART_PART_BYTES : (i + 1) * ART_PART_BYTES])
+                        art = {"t": "art", "key": key, "mime": mime, "data": chunk, "part": i, "parts": parts}
+                        self._art_out.append(art)
+                self.send(_WAKE)
 
     def send_upsert(self, activity: dict[str, Any], now: int) -> None:
         self._send_art_for(activity)
@@ -93,16 +107,25 @@ class Session:
         self.send({"t": "snapshot", "now": now, "activities": activities})
 
     async def _writer(self) -> None:
-        while (msg := await self._out.get()) is not None:
-            if self.phone.frozen:
-                continue
-            try:
-                await self.channel.send(msg)
-            except (ConnectionError, OSError) as e:
-                self.close(f"connection lost ({e})", flush=False)
+        while True:
+            if self._out.empty() and self._art_out and self._art_ping is None and not self.phone.frozen:
+                self._ping_req += 1
+                self._art_ping = self._ping_req
+                batch = [self._art_out.popleft(), {"t": "ping", "req": self._art_ping}]
+            elif (msg := await self._out.get()) is None:
                 return
-            self._last_sent = self._loop.time()
-            self.phone.log.debug("-> %s %s", self.id, _summary(msg))
+            elif msg is _WAKE or self.phone.frozen:
+                continue
+            else:
+                batch = [msg]
+            for msg in batch:
+                try:
+                    await self.channel.send(msg)
+                except (ConnectionError, OSError) as e:
+                    self.close(f"connection lost ({e})", flush=False)
+                    return
+                self._last_sent = self._loop.time()
+                self.phone.log.debug("-> %s %s", self.id, _summary(msg))
 
     # -- incoming ---------------------------------------------------------------------------------------------
 
@@ -132,10 +155,15 @@ class Session:
             art = msg.get("art")
             if isinstance(art, list):  # art the laptop already holds (spec 3.4): not resent
                 self._sent_art.update(k for k in art if isinstance(k, str))
+            self._art_parts = msg.get("artParts") is True
             self._on_ready(msg.get("paired") is True)
         elif t == "ping":
             self.send({"t": "pong", "req": msg.get("req")})
-        elif t in ("pong", "ready"):
+        elif t == "pong":
+            if msg.get("req") == self._art_ping:
+                self._art_ping = None
+                self.send(_WAKE)
+        elif t == "ready":
             pass
         elif t == "bye":
             self.close(f"bye from peer ({msg.get('reason', '')})" if msg.get("reason") else "bye from peer")

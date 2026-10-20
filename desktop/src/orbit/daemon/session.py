@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import base64
+import binascii
 import contextlib
 import logging
 import secrets
@@ -25,6 +27,10 @@ SENT_THEN_LOST = "connection lost after the action was sent; it may have been ap
 NO_RESPONSE = "phone did not respond; it may still be applied"
 # A probe also passes if data is still arriving at its deadline (a large frame, a burst of art).
 PROBE_FLOWING = 1.0
+ART_MIMES = ("image/png", "image/jpeg")
+# Bounds on the one image a session reassembles from `art` parts (spec 5.3).
+ART_MAX_PARTS = 256
+ART_MAX_ASSEMBLED = 1024 * 1024
 
 
 class LinkDown(ConnectionError):
@@ -154,6 +160,8 @@ class Session:
         self._req = 0
         self._ping_req = 0
         self._pending: dict[int, asyncio.Future] = {}
+        # The image being reassembled from parts: key, mime, part count, bytes so far, parts so far.
+        self._art: tuple[str, str, int, bytearray, int] | None = None
         # Request id -> stream offset just past its action frame, once written.
         self._frame_end: dict[int, int] = {}
         # Request id -> whether the phone may have its action, judged when the session ended.
@@ -217,7 +225,7 @@ class Session:
 
     async def exchange_ready(self, timeout: float, art: list[str] | None = None) -> None:
         """Send our ``ready`` (with the art keys we hold, spec 3.4) and wait for the phone's."""
-        ready: dict[str, Any] = {"t": "ready", "paired": self.local_paired, "now": now_ms()}
+        ready: dict[str, Any] = {"t": "ready", "paired": self.local_paired, "now": now_ms(), "artParts": True}
         if art:
             ready["art"] = art
         await self.send(ready)
@@ -528,7 +536,8 @@ class Session:
                 if isinstance(msg.get("id"), str):
                     d.remove_activity(self, msg["id"])
             case "art":
-                d.store_art(self, msg)
+                if art := self._assemble_art(msg):
+                    d.store_art(self, *art)
             case "action_result":
                 self._answered(action=msg.get("req"))
                 fut = self._pending.get(msg.get("req"))
@@ -540,6 +549,39 @@ class Session:
                 self._finish()
             case _:
                 pass  # spec 2: unknown types are ignored
+
+    def _assemble_art(self, msg: dict[str, Any]) -> tuple[str, str, bytes] | None:
+        """(key, mime, image) once ``msg`` completes an image (spec 5.3); the key is checked by the caller."""
+        key, mime, data, part, parts = (msg.get(k) for k in ("key", "mime", "data", "part", "parts"))
+        if not isinstance(key, str) or mime not in ART_MIMES or not isinstance(data, str):
+            return None
+        try:
+            raw = base64.b64decode(data, validate=True)
+        except (binascii.Error, ValueError):
+            log.warning("art %s from %s is not valid base64", key, self.peer.id)
+            return None
+        if part is None and parts is None:
+            return key, mime, raw
+        if not (_index(part) and _index(parts) and part < parts <= ART_MAX_PARTS):
+            self._art = None
+            return None
+        if part == 0:
+            self._art = (key, mime, parts, bytearray(), 0)
+        art, self._art = self._art, None
+        if art is None or (art[:3], art[4]) != ((key, mime, parts), part):
+            return None  # not the next part of the image being reassembled: it is incomplete
+        assembled = art[3] + raw
+        if len(assembled) > ART_MAX_ASSEMBLED:
+            log.warning("art %s from %s is over %d bytes", key, self.peer.id, ART_MAX_ASSEMBLED)
+            return None
+        if part + 1 < parts:
+            self._art = (key, mime, parts, assembled, part + 1)
+            return None
+        return key, mime, bytes(assembled)
+
+
+def _index(v: Any) -> bool:
+    return isinstance(v, int) and not isinstance(v, bool) and v >= 0
 
 
 def _valid_activity(a: Any) -> bool:

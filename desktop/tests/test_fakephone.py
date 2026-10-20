@@ -26,12 +26,12 @@ class Laptop:
         self.id = device_id(self.identity.public)
         self.req = 0
 
-    async def connect(self, phone: FakePhone, paired: bool = False) -> "Laptop":
+    async def connect(self, phone: FakePhone, paired: bool = False, **ready) -> "Laptop":
         reader, self.writer = await asyncio.open_connection("127.0.0.1", phone.port)
         self.ch = await initiate(FrameStream(reader, self.writer), self.identity, self.name, "macos")
         self.ready = await self.recv()
         assert self.ready["t"] == "ready"
-        await self.send({"t": "ready", "paired": paired, "now": int(time.time() * 1000)})
+        await self.send({"t": "ready", "paired": paired, "now": int(time.time() * 1000)} | ready)
         return self
 
     async def send(self, msg: dict) -> None:
@@ -41,14 +41,25 @@ class Laptop:
         return await asyncio.wait_for(self.ch.recv(), within)
 
     async def recv_until(self, pred, within: float = 2.0) -> tuple[dict, list[dict]]:
-        """Read until pred(msg); return that message and everything read before it."""
+        """Read until pred(msg); return that message and everything read before it but pings, which are answered."""
         seen: list[dict] = []
         async with asyncio.timeout(within):
             while True:
                 msg = await self.ch.recv()
                 if pred(msg):
                     return msg, seen
-                seen.append(msg)
+                if msg["t"] == "ping":
+                    await self.send({"t": "pong", "req": msg["req"]})
+                else:
+                    seen.append(msg)
+
+    async def art(self, keys) -> dict[str, dict]:
+        """The `art` messages for ``keys``, which may still be on their way, by key."""
+        arts: dict[str, dict] = {}
+        while set(keys) - set(arts):
+            art, _ = await self.recv_until(lambda m: m["t"] == "art")
+            arts[art["key"]] = art
+        return arts
 
     async def action(self, activity: str, action: str, value=None) -> tuple[dict, list[dict]]:
         self.req += 1
@@ -108,7 +119,7 @@ def png_size(data: bytes) -> tuple[int, int]:
     return struct.unpack(">II", data[16:24])
 
 
-async def test_first_pairing_pins_peer_and_sends_art_before_snapshot(make_phone, tmp_path):
+async def test_first_pairing_pins_peer_and_sends_art_after_snapshot(make_phone, tmp_path):
     phone = await make_phone(auto_accept=None)
     laptop = await Laptop().connect(phone)
     assert laptop.ready["paired"] is False and abs(laptop.ready["now"] - time.time() * 1000) < 5000
@@ -128,15 +139,15 @@ async def test_first_pairing_pins_peer_and_sends_art_before_snapshot(make_phone,
     assert pinned.platform == "macos"
 
     snapshot, before = await laptop.recv_until(lambda m: m["t"] == "snapshot")
-    arts = {}
-    for msg in before:
-        assert msg["t"] == "art", msg
-        data = base64.b64decode(msg["data"])
-        assert msg["key"] == hashlib.sha256(data).hexdigest()[:16] and msg["mime"] == "image/png"
-        assert max(png_size(data)) <= 256
-        arts[msg["key"]] = data
+    assert before == []
     assert {a["id"] for a in snapshot["activities"]} == ALL_IDS
     referenced = {a[k] for a in snapshot["activities"] for k in ("iconKey", "artKey") if k in a}
+    arts = {}
+    for key, msg in (await laptop.art(referenced)).items():
+        data = base64.b64decode(msg["data"])
+        assert key == hashlib.sha256(data).hexdigest()[:16] and msg["mime"] == "image/png"
+        assert max(png_size(data)) <= 256
+        arts[key] = data
     assert referenced == set(arts)
     media = next(a for a in snapshot["activities"] if a["kind"] == "media")
     assert png_size(arts[media["artKey"]]) == (128, 128)
@@ -160,7 +171,7 @@ async def test_reconnect_paired_gets_snapshot_without_pairing(make_phone, tmp_pa
     laptop = await Laptop(identity).connect(phone, paired=True)
     assert laptop.ready["paired"] is True
     snapshot, before = await laptop.recv_until(lambda m: m["t"] == "snapshot")
-    assert {m["t"] for m in before} == {"art"} and {a["id"] for a in snapshot["activities"]} == ALL_IDS
+    assert before == [] and {a["id"] for a in snapshot["activities"]} == ALL_IDS
     assert (await phone.wait_event("ready"))["paired"] is True
     assert not [e for k, e in phone.history if k == "pairing"]
 
@@ -248,7 +259,7 @@ async def test_media_actions(make_phone):
     upsert = next(m for m in seen if is_media(m))
     assert upsert["activity"]["title"] == phone.media.tracks[1].title and upsert["activity"]["media"]["positionMs"] == 0
     new_art = upsert["activity"]["artKey"]
-    assert [m["key"] for m in seen[: seen.index(upsert)] if m["t"] == "art"] == [new_art]
+    assert new_art in await laptop.art([new_art])  # art follows the activity that references it
 
     result, seen = await laptop.action("media:com.example.music", "media.seek", 30_000)
     assert result["ok"] and phone.media.position_ms() == 30_000
@@ -453,9 +464,9 @@ async def test_custom_upsert_and_remove_reach_all_paired_sessions(make_phone):
     }
     phone.upsert(activity)
     for laptop in (a, b):
-        msg, before = await laptop.recv_until(lambda m: m["t"] == "upsert" and m["activity"]["id"] == "call:1")
+        msg, _ = await laptop.recv_until(lambda m: m["t"] == "upsert" and m["activity"]["id"] == "call:1")
         assert msg["activity"]["title"] == "Bob" and "updatedMs" in msg["activity"]
-        assert [m["key"] for m in before if m["t"] == "art"] == [icon]
+        assert icon in await laptop.art([icon])
     result, _ = await a.action("call:1", "notif.0")
     assert result["ok"] is True
     result, _ = await a.action("call:1", "dismiss")
@@ -464,6 +475,29 @@ async def test_custom_upsert_and_remove_reach_all_paired_sessions(make_phone):
     for laptop in (a, b):
         await laptop.recv_until(lambda m: m == {"t": "remove", "id": "call:1"})
     await unpaired.assert_silent(0.2)
+
+
+async def test_large_art_goes_in_parts_to_a_laptop_that_reassembles_them(make_phone):
+    phone = await make_phone()
+    image = b"\xff\xd8\xff" + bytes(range(256)) * 40  # a 10 KB "JPEG"
+    key = phone.add_art(image)
+    activity = {"id": "m", "kind": "media", "app": {"id": "p", "name": "P"}, "title": "T", "artKey": key, "actions": []}
+    parts_laptop, whole_laptop = Laptop(), Laptop()
+    for laptop, ready in ((parts_laptop, {"artParts": True}), (whole_laptop, {})):
+        await laptop.connect(phone, **ready)
+        await laptop.send({"t": "pair_request"})
+        await laptop.recv_until(lambda m: m["t"] == "pair_decision")
+        await laptop.send({"t": "pair_decision", "accepted": True})
+        await laptop.recv_until(lambda m: m["t"] == "snapshot")
+    phone.upsert(activity)
+    await parts_laptop.recv_until(lambda m: m["t"] == "upsert")
+    parts = [(await parts_laptop.recv_until(lambda m: m["t"] == "art" and m["key"] == key))[0] for _ in range(3)]
+    assert [(m["part"], m["parts"], m["mime"]) for m in parts] == [(i, 3, "image/jpeg") for i in range(3)]
+    assert [len(base64.b64decode(m["data"])) for m in parts] == [4096, 4096, len(image) - 8192]
+    assert b"".join(base64.b64decode(m["data"]) for m in parts) == image
+    await whole_laptop.recv_until(lambda m: m["t"] == "upsert")
+    art = (await whole_laptop.art([key]))[key]
+    assert "part" not in art and base64.b64decode(art["data"]) == image
 
 
 async def test_unpair_removes_pin_and_closes(make_phone, tmp_path):

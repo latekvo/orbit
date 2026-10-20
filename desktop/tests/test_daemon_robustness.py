@@ -344,3 +344,127 @@ async def test_unreachable_advertised_addresses_fail_fast_then_next_is_tried(mak
 
         daemon.on_lan("Emu._orbit._tcp.local.", {**info, "addresses": [*blackholes, ("127.0.0.1", phone.port)]})
         assert await api.call("devices.connect", {"id": phone.id}) == {"id": phone.id}
+
+
+def art_parts(image: bytes, size: int, key: str | None = None) -> list[dict]:
+    key = key or hashlib.sha256(image).hexdigest()[:16]
+    chunks = [image[i : i + size] for i in range(0, len(image), size)]
+    return [
+        {"t": "art", "key": key, "mime": "image/jpeg", "data": base64.b64encode(c).decode(), "part": i, "parts": n}
+        for n in [len(chunks)]
+        for i, c in enumerate(chunks)
+    ]
+
+
+async def test_art_in_parts_is_reassembled_around_other_messages(make_daemon, short_tmp):
+    image = bytes(range(10))
+    key = hashlib.sha256(image).hexdigest()[:16]
+    laptop_ready = {}
+
+    async def script(ch):
+        await ch.send({"t": "ready", "paired": True, "now": now_ms()})
+        laptop_ready.update(await ch.recv())
+        p = art_parts(image, 4)
+        await ch.send(p[0])
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [{"id": "a", "kind": "media", "artKey": key}]})
+        await ch.send(p[1])
+        await ch.send({"t": "ping", "req": 1})
+        await ch.send(p[2])
+        await asyncio.sleep(30)
+
+    async with RawPhone(script) as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        await until(lambda: key in daemon.devices[phone.id].art)
+        assert daemon.devices[phone.id].art[key] == ("image/jpeg", image)
+        assert laptop_ready["artParts"] is True
+
+
+IMAGE = bytes(range(10))
+P = art_parts(IMAGE, 4)
+OTHER = art_parts(b"another image", 4)
+ACTIVITY = {"id": "a", "kind": "media", "artKey": P[0]["key"]}
+
+
+@pytest.mark.parametrize(
+    ("frames", "stored"),
+    [
+        ([P[0], P[2]], False),  # a gap
+        ([P[0], OTHER[0], P[1], P[2]], False),  # another image started
+        ([P[0], {**P[1], "parts": 4}, P[2]], False),
+        ([P[0], {**P[1], "mime": "image/png"}, P[2]], False),
+        ([{**P[0], "part": False}, P[1], P[2]], False),
+        ([P[0], {**P[1], "part": True}, P[2]], False),
+        ([P[0], {**P[1], "part": 1.0}, P[2]], False),
+        ([P[0], P[1], P[1], P[2]], False),  # a repeated part
+        ([*art_parts(IMAGE, 4, key="0" * 16)], False),  # the key is checked on the whole image
+        ([{**p, "parts": 257, "part": p["part"]} for p in art_parts(IMAGE, 4)], False),
+        ([P[0], P[1], P[0], P[1], P[2]], True),  # started over
+        ([P[0], {"t": "art", "key": "1" * 16, "mime": "image/png", "data": ""}, P[1], P[2]], True),
+        ([*art_parts(IMAGE, 10)], True),  # one part
+    ],
+)
+async def test_incomplete_or_inconsistent_art_parts_are_discarded(make_daemon, short_tmp, frames, stored):
+    done = b"done"
+    done_key = hashlib.sha256(done).hexdigest()[:16]
+    key = P[0]["key"]
+
+    async def script(ch):
+        await ready(ch)
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [ACTIVITY]})
+        for f in frames:
+            await ch.send(f)
+        await ch.send({"t": "art", "key": done_key, "mime": "image/png", "data": base64.b64encode(done).decode()})
+        await asyncio.sleep(30)
+
+    async with RawPhone(script) as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        await until(lambda: done_key in daemon.devices[phone.id].art)
+        assert (key in daemon.devices[phone.id].art) is stored
+
+
+async def test_reassembled_art_is_bounded(make_daemon, short_tmp, monkeypatch):
+    from orbit.daemon import session
+
+    monkeypatch.setattr(session, "ART_MAX_ASSEMBLED", 8)
+    small = bytes(8)
+    small_key = hashlib.sha256(small).hexdigest()[:16]
+
+    async def script(ch):
+        await ready(ch)
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [ACTIVITY]})
+        for f in P + art_parts(small, 4):
+            await ch.send(f)
+        await asyncio.sleep(30)
+
+    async with RawPhone(script) as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        await until(lambda: small_key in daemon.devices[phone.id].art)
+        assert P[0]["key"] not in daemon.devices[phone.id].art
+
+
+async def test_art_parts_do_not_continue_across_sessions(make_daemon, short_tmp):
+    sessions = []
+    done = b"done"
+    done_key = hashlib.sha256(done).hexdigest()[:16]
+
+    async def script(ch):
+        sessions.append(ch)
+        await ready(ch)
+        await ch.send({"t": "snapshot", "now": now_ms(), "activities": [ACTIVITY]})
+        if len(sessions) == 1:
+            await ch.send(P[0])
+            await ch.send(P[1])
+            ch.close()
+            return
+        await ch.send(P[2])
+        await ch.send({"t": "art", "key": done_key, "mime": "image/png", "data": base64.b64encode(done).decode()})
+        await asyncio.sleep(30)
+
+    async with RawPhone(script) as phone:
+        pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{phone.port}")
+        daemon = await make_daemon()
+        await until(lambda: done_key in daemon.devices[phone.id].art, timeout=10)
+        assert len(sessions) == 2 and P[0]["key"] not in daemon.devices[phone.id].art

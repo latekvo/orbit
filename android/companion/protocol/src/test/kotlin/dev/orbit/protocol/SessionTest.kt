@@ -57,11 +57,13 @@ class SessionTest {
     private class Client(val ch: SecureChannel, val socket: Socket) : AutoCloseable {
         fun send(text: String) = ch.send(json(text))
         fun recv(): JsonObject = ch.recv()
+        /** The next message of type [t]; pings on the way are answered (art waits for their pongs). */
         fun recvType(t: String): JsonObject {
             while (true) {
                 val m = recv()
                 if (m.type == t) return m
                 if (m.type != "ping") fail("expected $t, got $m")
+                ch.send(json("""{"t":"pong","req":${m["req"]}}"""))
             }
         }
         override fun close() = socket.close()
@@ -141,8 +143,7 @@ class SessionTest {
         // Art follows the snapshot that references it.
         val snapshot = c.recvType("snapshot")
         assertEquals(listOf("x"), (snapshot["activities"] as JsonArray).map { (it as JsonObject).str("id") })
-        val art = c.recv()
-        assertEquals("art", art.type)
+        val art = c.recvType("art")
         assertEquals(icon.key, art.str("key"))
         assertEquals("image/png", art.str("mime"))
         assertEquals(b64e(byteArrayOf(1, 2, 3)), art.str("data"))
@@ -151,13 +152,12 @@ class SessionTest {
 
         // Same icon again: no second art message.
         hub.upsert(activity("y", "Second", iconKey = icon.key))
-        val up = c.recv()
-        assertEquals("upsert", up.type)
+        val up = c.recvType("upsert")
         assertEquals("y", (up["activity"] as JsonObject).str("id"))
         // New art key: the art follows the upsert.
         hub.upsert(activity("y", "Second", iconKey = icon.key, artKey = cover.key), listOf(cover))
         assertEquals(cover.key, (c.recvType("upsert")["activity"] as JsonObject).str("artKey"))
-        assertEquals(cover.key, c.recv().also { assertEquals("art", it.type) }.str("key"))
+        assertEquals(cover.key, c.recvType("art").str("key"))
         hub.remove("x")
         assertEquals(json("""{"t":"remove","id":"x"}"""), c.recvType("remove"))
     }
