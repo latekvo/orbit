@@ -72,25 +72,6 @@ async def test_bug_timed_out_action_is_applied_later(rig):
     assert len(rig.execs()) == 1, rig.execs()
 
 
-@pytest.mark.xfail(strict=True, reason="responder side: the phone applies an action it reads after the laptop gave up")
-async def test_bug_action_from_session_declared_dead_is_applied(rig):
-    """Phone frozen 45 s: orbitd drops the session 5 s after the unanswered action and shows the
-    device offline later. On resume the phone still reads and applies the action buffered on that
-    dead session (only the phone can refuse it).
-    (Racy on the phone: its ticker or its reader may run first; it failed 3/4 runs here.)"""
-    rig.phone.signal(signal.SIGSTOP)
-    await asyncio.sleep(1)
-    task = asyncio.create_task(rig.action())
-    await asyncio.sleep(44)
-    assert rig.state() == "offline"
-    rig.phone.signal(signal.SIGCONT)
-    _, result = await task
-    assert "may" in str(result)
-    await rig.wait_state("connected", 20)
-    await asyncio.sleep(1)
-    assert rig.execs() == [], "an action answered as timed out on a dead session was applied"
-
-
 async def test_bug_phone_back_within_grace_still_goes_offline(rig):
     """Companion restarts within the 15 s grace (sticky restart, app update) on a manual route:
     the reconnect waits for the backoff slot at t=15 s, so the device flips to offline and its
@@ -124,6 +105,23 @@ async def test_bug_phone_back_after_grace_reconnects_late(rig):
 
 
 # ---- regression checks -----------------------------------------------------------------------
+
+
+async def test_action_from_session_declared_dead_is_not_applied(rig):
+    """Phone frozen 45 s: orbitd drops the session 5 s after the unanswered action and shows the
+    device offline later. On resume the phone must not apply the action buffered on that dead
+    session (only the phone can refuse it)."""
+    rig.phone.signal(signal.SIGSTOP)
+    await asyncio.sleep(1)
+    task = asyncio.create_task(rig.action())
+    await asyncio.sleep(44)
+    assert rig.state() == "offline"
+    rig.phone.signal(signal.SIGCONT)
+    _, result = await task
+    assert "may" in str(result)
+    await rig.wait_state("connected", 20)
+    await asyncio.sleep(1)
+    assert rig.execs() == [], "an action answered as timed out on a dead session was applied"
 
 
 async def test_kill9_detected_at_once_and_recovers(rig):
@@ -220,17 +218,16 @@ async def drig(docker_api_port):
 
 
 @docker_only
-async def test_bug_wifi_blip_8s_double_applies(drig):
-    """An 8 s blackhole (Wi-Fi power save, roaming): the session survives, the action is answered
-    `timeout`, TCP retransmission delivers it ~6 s after the link is back and the user's retry is
-    applied too."""
+async def test_wifi_blip_8s_action_retry_applies_once(drig):
+    """An 8 s blackhole (Wi-Fi power save, roaming) swallows an action: the user is told it may have
+    been applied, and their retry must not make it two."""
     drig.blackhole(True)
     await asyncio.sleep(1)
     task = asyncio.create_task(drig.action())
     await asyncio.sleep(7)
     drig.blackhole(False)
     _, result = await task
-    assert result == "timeout: phone did not respond"
+    assert "may" in str(result), result
     await asyncio.sleep(2)
     _, retry = await drig.action()
     assert retry == {"ok": True}

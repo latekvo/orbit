@@ -19,6 +19,7 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.util.Log
 import dev.orbit.protocol.ByteStream
 import dev.orbit.protocol.hexToBytes
@@ -304,7 +305,7 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
 
         private fun sendChunk(chunk: ByteArray) {
             synchronized(notifyLock) {
-                val start = System.currentTimeMillis()
+                val start = SystemClock.elapsedRealtime()
                 var busy = 0
                 var lastCode = 0
                 while (true) {
@@ -326,14 +327,14 @@ class BleServer(private val context: Context, private val orbit: Orbit) {
                     busy++
                     lastCode = code
                     // The stack is busy (e.g. congested): retry briefly.
-                    if (System.currentTimeMillis() - start > NOTIFY_TIMEOUT_MS) {
+                    if (SystemClock.elapsedRealtime() - start > NOTIFY_TIMEOUT_MS) {
                         EventLog.log("ble ${device.address} notify not accepted for ${NOTIFY_TIMEOUT_MS} ms ($busy tries, last code $lastCode)")
                         throw IOException("notification not accepted ($lastCode)")
                     }
                     Thread.sleep(10)
                 }
                 if (busy > 0) {
-                    EventLog.log("ble ${device.address} stack busy: notify accepted after $busy tries, ${System.currentTimeMillis() - start} ms (last code $lastCode)")
+                    EventLog.log("ble ${device.address} stack busy: notify accepted after $busy tries, ${SystemClock.elapsedRealtime() - start} ms (last code $lastCode)")
                 }
                 if (!sent.tryAcquire(NOTIFY_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
                     EventLog.log("ble ${device.address} onNotificationSent timeout (${NOTIFY_TIMEOUT_MS} ms)")

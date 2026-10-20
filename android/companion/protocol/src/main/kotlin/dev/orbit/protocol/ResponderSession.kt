@@ -7,7 +7,10 @@ import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.put
+import java.io.FilterInputStream
 import java.io.IOException
+import java.io.InputStream
+import java.io.OutputStream
 import java.util.concurrent.LinkedBlockingQueue
 import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.ScheduledExecutorService
@@ -57,8 +60,14 @@ class ResponderSession(
     private val hub: ActivityHub,
     private val host: SessionHost,
     private val scheduler: ScheduledExecutorService,
+    /** Wall-clock epoch ms, for the `now` fields. */
     private val clock: () -> Long = System::currentTimeMillis,
     private val timeouts: SessionTimeouts = SessionTimeouts(),
+    /**
+     * Monotonic ms for deadlines and keepalive. It must keep counting while the device sleeps
+     * (Android: SystemClock.elapsedRealtime), or a frozen process misses its deadlines on resume.
+     */
+    private val elapsed: () -> Long = { System.nanoTime() / 1_000_000 },
     private val handshake: (FrameStream) -> SecureChannel = { Handshake.respond(it, identity, name, platform) },
     /** Chooses per-transport art variants; null sends art as stored. */
     private val artSizer: ArtSizer? = null,
@@ -95,11 +104,25 @@ class ResponderSession(
 
     private var localPinned = false
     private var remoteReady: Boolean? = null
-    private val startedAt = clock()
+    private val startedAt = elapsed()
     private var pairingStartedAt = 0L
     private var establishedAt = 0L
     @Volatile private var lastRecv = startedAt
     @Volatile private var lastSent = startedAt
+
+    /**
+     * [stream] whose reads count as receiving (spec 5: any byte counts). Bytes read past a deadline
+     * end the session unhandled: they waited in a buffer while this process was frozen (app
+     * freezer, doze) and the peer has given up on them and on the session.
+     */
+    private val inbound = object : ByteStream {
+        override val input: InputStream = object : FilterInputStream(stream.input) {
+            override fun read(): Int = super.read().also { if (it >= 0) received() }
+            override fun read(b: ByteArray, off: Int, len: Int): Int = super.read(b, off, len).also { if (it > 0) received() }
+        }
+        override val output: OutputStream get() = stream.output
+        override fun close() = stream.close()
+    }
 
     private val hubListener = object : ActivityHub.Listener {
         override fun onUpsert(activity: JsonObject) = enqueue { sendActivity(activity) }
@@ -117,23 +140,20 @@ class ResponderSession(
             ticker = scheduler.scheduleAtFixedRate({ tick() }, timeouts.tickMs, timeouts.tickMs, TimeUnit.MILLISECONDS)
         }
         try {
-            val ch = handshake(FrameStream(stream))
+            val ch = handshake(FrameStream(inbound))
             synchronized(lock) {
                 if (state == State.CLOSED) return
                 channel = ch
                 peer = ch.peer
                 sas = ch.sas
                 localPinned = host.isPinned(ch.peer)
-                establishedAt = clock()
+                establishedAt = elapsed()
                 state = State.UNPAIRED
             }
-            lastRecv = clock()
             host.sessionChanged(this)
             enqueue { send(buildJsonObject { put("t", "ready"); put("paired", localPinned); put("now", clock()) }) }
             while (state != State.CLOSED) {
-                val msg = ch.recv()
-                lastRecv = clock()
-                handle(msg)
+                handle(ch.recv())
             }
         } catch (e: ProtocolError) {
             close(e.code)
@@ -183,7 +203,7 @@ class ResponderSession(
         synchronized(lock) {
             if (state != State.UNPAIRED) return
             state = State.PAIRING
-            pairingStartedAt = clock()
+            pairingStartedAt = elapsed()
         }
         host.sessionChanged(this)
     }
@@ -214,7 +234,7 @@ class ResponderSession(
             if (state == State.UNPAIRED) {
                 // A decision without a prior pair_request still starts the prompt.
                 state = State.PAIRING
-                pairingStartedAt = clock()
+                pairingStartedAt = elapsed()
             }
             if (state != State.PAIRING) return
             remoteDecision = true
@@ -285,27 +305,41 @@ class ResponderSession(
         closeAfterFlush("forgotten locally")
     }
 
-    /** Sends `bye` and closes. */
-    fun shutdown(reason: String) {
-        enqueue { send(buildJsonObject { put("t", "bye"); put("reason", reason) }) }
+    /** Sends `bye` with [bye] as its reason and closes for [reason]. */
+    fun shutdown(reason: String, bye: String = reason) {
+        enqueue { send(buildJsonObject { put("t", "bye"); put("reason", bye) }) }
         closeAfterFlush(reason)
     }
 
     private fun tick() {
-        val now = clock()
-        when (state) {
-            State.CLOSED -> return
-            State.HANDSHAKE -> if (now - startedAt >= timeouts.handshakeMs) close("handshake timeout")
-            else -> {
-                if (now - lastRecv >= timeouts.idleMs) return close("idle timeout")
-                if (state == State.UNPAIRED && now - establishedAt >= timeouts.unpairedMs) return close("unpaired timeout")
-                if (state == State.PAIRING && now - pairingStartedAt >= timeouts.pairingMs) return close("pairing timeout")
-                if (now - lastSent >= timeouts.pingAfterMs) {
-                    lastSent = now // avoid queueing a ping per tick while a slow link drains
-                    enqueue { send(buildJsonObject { put("t", "ping"); put("req", ++nextPing) }) }
-                }
-            }
+        val now = elapsed()
+        if (expire(now)) return
+        if (state != State.HANDSHAKE && now - lastSent >= timeouts.pingAfterMs) {
+            lastSent = now // avoid queueing a ping per tick while a slow link drains
+            enqueue { send(buildJsonObject { put("t", "ping"); put("req", ++nextPing) }) }
         }
+    }
+
+    /** Reader thread: bytes arrived. */
+    private fun received() {
+        val now = elapsed()
+        if (expire(now)) throw IOException(closeReason)
+        lastRecv = now
+    }
+
+    /** Closes the session if one of its deadlines has passed at [now]; true if it did. */
+    private fun expire(now: Long): Boolean {
+        val s = state
+        when {
+            s == State.CLOSED -> return true
+            s == State.HANDSHAKE -> if (now - startedAt >= timeouts.handshakeMs) close("handshake timeout") else return false
+            now - lastRecv >= timeouts.idleMs -> close("idle timeout")
+            // The peer is still there: tell it why.
+            s == State.UNPAIRED && now - establishedAt >= timeouts.unpairedMs -> shutdown("unpaired timeout", bye = "not paired")
+            s == State.PAIRING && now - pairingStartedAt >= timeouts.pairingMs -> shutdown("pairing timeout")
+            else -> return false
+        }
+        return true
     }
 
     // --- sending (sender thread) ---
@@ -336,7 +370,7 @@ class ResponderSession(
     private fun send(msg: JsonObject) {
         val ch = channel ?: return
         ch.send(msg)
-        lastSent = clock()
+        lastSent = elapsed()
     }
 
     private fun sendActivity(activity: JsonObject) {

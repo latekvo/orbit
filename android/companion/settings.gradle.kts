@@ -13,4 +13,4 @@ dependencyResolutionManagement {
     }
 }
 rootProject.name = "orbit-companion"
-include(":protocol", ":app")
+include(":protocol", ":app", ":jvmphone")

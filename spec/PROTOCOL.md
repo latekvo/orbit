@@ -145,7 +145,8 @@ Pairing:
    becomes paired (R then sends `snapshot`). Any `accepted:false` -> both close.
 5. Pairing that is not completed within 120 s is abandoned (close).
 
-R closes a session that is neither paired nor pairing 30 s after the handshake.
+R closes a session that is neither paired nor pairing 30 s after the handshake, after sending
+`{"t":"bye","reason":"not paired"}`.
 
 `{"t":"unpair"}` from either side: the receiver removes the pin and closes.
 
@@ -173,7 +174,7 @@ its own clock. Media positions are valid at the message's `now`.
 | `art` | R->I | `key`, `mime` (`image/png`/`image/jpeg`), `data` (b64). Sent at most once per `key` per session, possibly after the activities that reference it (5.3). `key` = first 16 hex chars of SHA-256(data). Images are at most 256x256. |
 | `action` | I->R | `req` (int, unique per session), `activity` (id), `action` (action id), `value` (optional; see below) |
 | `action_result` | R->I | `req`, `ok` (bool), `error` (optional string) |
-| `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive). I also closes when one of its pings goes unanswered for 10 s, or an `action` for 5 s (an answer is the `pong`, the `action_result`, or data still arriving at that moment), so a silently dead link is noticed before the user's click could be delivered late. A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
+| `ping` / `pong` | both | `req` (int). Send `ping` after 10 s without sending anything; close after 30 s without receiving anything (any byte counts, so a large frame still arriving keeps the session alive), without handling anything read after that deadline (such as an `action` read when a frozen process resumes: the peer has given up on it). I also closes when one of its pings goes unanswered for 10 s, or an `action` for 5 s (an answer is the `pong`, the `action_result`, or data still arriving at that moment), so a silently dead link is noticed before the user's click could be delivered late. A peer still on the older 20 s / 60 s stays connected: the other side's pings draw its pongs. |
 | `bye` | both | `reason` (optional). Sender closes after sending. |
 | `error` | both | `code`, `message` |
 
