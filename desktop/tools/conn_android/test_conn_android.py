@@ -54,24 +54,6 @@ async def rig():
 # ---- open findings ---------------------------------------------------------------------------
 
 
-@pytest.mark.xfail(strict=True, reason="responder side: the phone applies an action it reads after the laptop gave up")
-async def test_bug_timed_out_action_is_applied_later(rig):
-    """Phone frozen 20 s (app freezer / doze / emulator pause): the action draws no answer, the
-    phone may apply it on resume; the user's retry must not make it two."""
-    rig.phone.signal(signal.SIGSTOP)
-    await asyncio.sleep(1)
-    task = asyncio.create_task(rig.action())
-    await asyncio.sleep(19)
-    rig.phone.signal(signal.SIGCONT)
-    _, result = await task
-    assert "may" in str(result)
-    await asyncio.sleep(2)
-    _, retry = await rig.action()
-    assert retry == {"ok": True}
-    # One press failed, one succeeded: the counter must have moved once.
-    assert len(rig.execs()) == 1, rig.execs()
-
-
 async def test_bug_phone_back_within_grace_still_goes_offline(rig):
     """Companion restarts within the 15 s grace (sticky restart, app update) on a manual route:
     the reconnect waits for the backoff slot at t=15 s, so the device flips to offline and its
@@ -105,6 +87,23 @@ async def test_bug_phone_back_after_grace_reconnects_late(rig):
 
 
 # ---- regression checks -----------------------------------------------------------------------
+
+
+async def test_action_answered_as_failed_is_not_applied_on_resume(rig):
+    """Phone frozen 20 s (app freezer / doze / emulator pause): the action draws no answer and
+    expires; the phone must refuse it on resume, so the user's retry is the only execution."""
+    rig.phone.signal(signal.SIGSTOP)
+    await asyncio.sleep(1)
+    task = asyncio.create_task(rig.action())
+    await asyncio.sleep(19)
+    rig.phone.signal(signal.SIGCONT)
+    _, result = await task
+    assert "may" in str(result)
+    await asyncio.sleep(2)
+    _, retry = await rig.action()
+    assert retry == {"ok": True}
+    # One press failed, one succeeded: the counter must have moved once.
+    assert len(rig.execs()) == 1, rig.execs()
 
 
 async def test_action_from_session_declared_dead_is_not_applied(rig):
