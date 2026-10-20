@@ -3,45 +3,28 @@
   "Fake Phone._orbit._tcp.local.": {
    "port": 47820,
    "addresses": [
-    "fd32:b::3",
-    "fe80::64ca:d2ff:febb:b5b7%11"
+    "fd32:a::3",
+    "fe80::5800:3bff:fe83:a42b"
    ],
    "txt": {
     "v": "1",
-    "id": "f1110e8109430062b47ca546bfdcbca3",
+    "id": "831ce5caf824bd4fe7f57d9c592f2754",
     "pf": "android"
    }
   }
  },
  "control_v4_only": {},
- "orbitd_device_after_30s": {
-  "id": "f1110e8109430062b47ca546bfdcbca3",
-  "name": "Fake Phone",
-  "platform": "android",
-  "paired": false,
-  "connected": false,
-  "state": "offline",
-  "transport": null,
-  "address": "[fd32:b::3]:47820",
-  "discovered": [
-   "lan"
-  ],
-  "provisional": false,
-  "problem": null
- },
+ "orbitd_device_after_30s": null,
  "manual_connect_v6": {
-  "t0": 1792474019.3342483,
+  "t0": 1792464575.5009825,
   "result": {
-   "id": "f1110e8109430062b47ca546bfdcbca3"
+   "id": "831ce5caf824bd4fe7f57d9c592f2754"
   },
   "dt": 0.002
  },
  "zc_log": [
-  "2026-10-20 05:26:44,466 WARNING zeroconf: Address not available when binding to ('fe80::847e:b3ff:fe2e:66c6', 5353, 0, 11), it is expected to happen on some systems",
-  "2026-10-20 05:26:44,466 INFO orbit.daemon.discovery: browsing _orbit._tcp.local. via mDNS",
-  "2026-10-20 05:26:44,502 WARNING zeroconf: Error with socket 10 (('::1', 5353, 0, 0))): [Errno 101] Network is unreachable",
-  "2026-10-20 05:26:46,094 INFO orbit.daemon.core: discovered Fake Phone (f1110e8109430062b47ca546bfdcbca3) via mDNS at [('fd32:b::3', 47820), ('fe80::64ca:d2ff:febb:b5b7', 47820)]"
+  "2026-10-20 02:48:50,183 INFO orbit.daemon.discovery: browsing _orbit._tcp.local. via mDNS"
  ],
- "_outcome": "passed",
- "_at": "2026-10-20 07:26:59"
+ "_outcome": "failed",
+ "_at": "2026-10-20 04:49:35"
 }

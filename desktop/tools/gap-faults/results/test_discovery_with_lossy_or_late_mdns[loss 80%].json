@@ -1,6 +1,6 @@
 {
  "spec": "loss 80%",
- "discovered_after_s": 16.1,
- "_outcome": "passed",
- "_at": "2026-10-20 07:27:01"
+ "discovered_after_s": null,
+ "_outcome": "failed",
+ "_at": "2026-10-20 04:49:56"
 }

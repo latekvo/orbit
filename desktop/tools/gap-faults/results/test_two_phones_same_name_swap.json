@@ -1,12 +1,12 @@
 {
  "before": {
-  "70ff2a06": [
+  "c66f62e3": [
    "Pixel 8",
    [
     "lan"
    ]
   ],
-  "59a9a3ae": [
+  "aa3a635d": [
    "Pixel 8-2",
    [
     "lan"
@@ -14,29 +14,29 @@
   ]
  },
  "action_before": {
-  "t0": 1792474019.2407703,
+  "t0": 1792464570.0184445,
   "result": {
    "ok": true
   },
   "dt": 0.001
  },
- "reconnect_s": 1.39,
+ "reconnect_s": 1.48,
  "action_after": {
-  "t0": 1792474026.814506,
+  "t0": 1792464577.6196923,
   "result": {
    "ok": true
   },
   "dt": 0.001
  },
  "after": {
-  "70ff2a06": [
+  "c66f62e3": [
    "Pixel 8",
    [
     "lan"
    ],
    "connected"
   ],
-  "59a9a3ae": [
+  "aa3a635d": [
    "Pixel 8-2",
    [
     "lan"
@@ -45,13 +45,13 @@
   ]
  },
  "lan_records": {
-  "70ff2a06": [
+  "c66f62e3": [
    "Pixel 8-2._orbit._tcp.local."
   ],
-  "59a9a3ae": [
+  "aa3a635d": [
    "Pixel 8._orbit._tcp.local."
   ]
  },
  "_outcome": "passed",
- "_at": "2026-10-20 07:27:06"
+ "_at": "2026-10-20 04:49:37"
 }

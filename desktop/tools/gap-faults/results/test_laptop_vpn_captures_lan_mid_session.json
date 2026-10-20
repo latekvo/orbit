@@ -1,36 +1,37 @@
 {
  "action_after_vpn_up": {
-  "t0": 1792473981.2525215,
+  "t0": 1792464507.0070982,
   "error": {
-   "code": "failed",
-   "message": "connection lost after the action was sent; it may have been applied"
+   "code": "timeout",
+   "message": "phone did not respond"
   },
-  "dt": 6.748
+  "dt": 10.002
  },
  "transitions": [
   [
-   6.87,
+   30.36,
    "reconnecting"
   ],
   [
-   21.88,
+   45.36,
    "offline"
   ],
   [
-   32.39,
+   57.38,
    "connected"
   ]
  ],
  "discovered_while_vpn": [
   "lan"
  ],
- "reconnect_after_vpn_down_s": 0.26,
+ "reconnect_after_vpn_down_s": 1.78,
  "closes": [
-  "orbit.daemon.session: session_closed session=4a40fb5c634f053a device=f6b49f4dd7e1188ed43a82715868c064 name='Fake Phone' transport=lan address=10.232.12.3:47820 uptime=7.3s cause='no data from phone for 7 s (the network changed)'",
-  "orbit.daemon.core: connecting to Fake Phone (f6b49f4dd7e1188ed43a82715868c064) failed: timeout: connecting to 10.232.12.3:47820 timed out - the phone is visible on the network but does not accept connections: the network may isolate devices (guest or corporate Wi-Fi); Bluetooth may still work; retrying in 1 s",
-  "orbit.daemon.core: connecting to Fake Phone (f6b49f4dd7e1188ed43a82715868c064) failed: timeout: connecting to 10.232.12.3:47820 timed out - the phone is visible on the network but does not accept connections: the network may isolate devices (guest or corporate Wi-Fi); Bluetooth may still work; retrying in 2 s",
-  "orbit.daemon.core: connecting to Fake Phone (f6b49f4dd7e1188ed43a82715868c064) failed: timeout: connecting to 10.232.12.3:47820 timed out - the phone is visible on the network but does not accept connections: the network may isolate devices (guest or corporate Wi-Fi); Bluetooth may still work; retrying in 4 s"
+  "orbit.daemon.session: session_closed session=ca5e38621b897f23 device=2fc87eb154d37ca3b1ee37b3ca9e10c4 name='Fake Phone' transport=lan address=10.232.15.3:47820 uptime=30.8s cause='no data from phone for 30 s'",
+  "orbit.daemon.core: connecting to Fake Phone (2fc87eb154d37ca3b1ee37b3ca9e10c4) failed: timeout: connecting to 10.232.15.3:47820 timed out; retrying in 1 s",
+  "orbit.daemon.core: connecting to Fake Phone (2fc87eb154d37ca3b1ee37b3ca9e10c4) failed: timeout: connecting to 10.232.15.3:47820 timed out; retrying in 2 s",
+  "orbit.daemon.core: connecting to Fake Phone (2fc87eb154d37ca3b1ee37b3ca9e10c4) failed: timeout: connecting to 10.232.15.3:47820 timed out; retrying in 4 s",
+  "orbit.daemon.core: connecting to Fake Phone (2fc87eb154d37ca3b1ee37b3ca9e10c4) failed: timeout: connecting to 10.232.15.3:47820 timed out; retrying in 8 s"
  ],
  "_outcome": "passed",
- "_at": "2026-10-20 07:26:53"
+ "_at": "2026-10-20 04:49:24"
 }

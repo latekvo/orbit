@@ -3,19 +3,17 @@
  "status": {
   "version": "0.0.0",
   "name": "Laptop",
-  "deviceId": "cb445e31c3a7709a6781d1b89b87d62f",
-  "lan": "browsing",
-  "lanError": null,
+  "deviceId": "221bc91bdae80570c30dac0357731819",
   "ble": "off",
   "bleError": null
  },
  "manual_connect": {
-  "t0": 1792474047.5693216,
+  "t0": 1792464573.2453728,
   "result": {
-   "id": "9de24ec22bfa8d4e41e107ee47beea28"
+   "id": "799c00cb47f97ce9dbef7293e5fbf7ee"
   },
-  "dt": 0.005
+  "dt": 0.003
  },
  "_outcome": "passed",
- "_at": "2026-10-20 07:27:27"
+ "_at": "2026-10-20 04:49:33"
 }
