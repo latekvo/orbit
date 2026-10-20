@@ -4,7 +4,7 @@
 
 Control: one JSON line per connection to --ctl, answered with one JSON line:
   {"cmd": "status"}                      port, advertised addresses, sessions
-  {"cmd": "big", "size": N}              upsert an activity whose art frame is ~N bytes
+  {"cmd": "big", "size": N}              upsert an activity whose art goes in one ~N-byte frame
   {"cmd": "burst", "n": N, "size": S}    N upserts, each with new ~S-byte art (album-art burst)
   {"cmd": "advertise", "addresses": [...]}  re-announce the service with these addresses ([] = current interfaces)
 Events (session, session_closed, action, ...) are appended to --events as {"t", "kind", ...}.
@@ -89,8 +89,12 @@ async def control(phone, reader, writer):
             }
         elif cmd == "big":
             key = phone.add_art(png_of_size(int(req["size"]), int(time.time() * 1000)))
-            phone.upsert({"id": "big", "kind": "generic", "app": {"id": "big", "name": "Big"}, "title": "big",
-                          "artKey": key})
+            part_bytes, phone_mod.ART_PART_BYTES = phone_mod.ART_PART_BYTES, 1 << 30  # one frame, not parts
+            try:
+                phone.upsert({"id": "big", "kind": "generic", "app": {"id": "big", "name": "Big"}, "title": "big",
+                              "artKey": key})
+            finally:
+                phone_mod.ART_PART_BYTES = part_bytes
             out = {"key": key}
         elif cmd == "burst":
             keys = []
