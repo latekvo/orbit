@@ -1,0 +1,30 @@
+{
+ "control_all": {
+  "Fake Phone._orbit._tcp.local.": {
+   "port": 47820,
+   "addresses": [
+    "fd32:a::3",
+    "fe80::5800:3bff:fe83:a42b"
+   ],
+   "txt": {
+    "v": "1",
+    "id": "831ce5caf824bd4fe7f57d9c592f2754",
+    "pf": "android"
+   }
+  }
+ },
+ "control_v4_only": {},
+ "orbitd_device_after_30s": null,
+ "manual_connect_v6": {
+  "t0": 1792464575.5009825,
+  "result": {
+   "id": "831ce5caf824bd4fe7f57d9c592f2754"
+  },
+  "dt": 0.002
+ },
+ "zc_log": [
+  "2026-10-20 02:48:50,183 INFO orbit.daemon.discovery: browsing _orbit._tcp.local. via mDNS"
+ ],
+ "_outcome": "failed",
+ "_at": "2026-10-20 04:49:35"
+}

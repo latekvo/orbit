@@ -1,0 +1,27 @@
+{
+ "device_after_40s": {
+  "id": "9af58ccea8b5e40f0b95d4395b3566ec",
+  "name": "Fake Phone",
+  "platform": "android",
+  "paired": true,
+  "connected": false,
+  "state": "offline",
+  "transport": null,
+  "address": null,
+  "discovered": [],
+  "provisional": false
+ },
+ "transitions": [
+  [
+   0.04,
+   "reconnecting"
+  ],
+  [
+   15.04,
+   "offline"
+  ]
+ ],
+ "log": [],
+ "_outcome": "failed",
+ "_at": "2026-10-20 04:49:09"
+}

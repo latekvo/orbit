@@ -1,0 +1,14 @@
+// gradle -I classpath.gradle :protocol:lanClasspath  -> writes the test runtime classpath to protocol/build/lan-classpath.txt
+allprojects {
+    afterEvaluate { p ->
+        if (p.name == "protocol") {
+            p.tasks.register("lanClasspath") {
+                dependsOn("testClasses")
+                doLast {
+                    def f = p.layout.buildDirectory.file("lan-classpath.txt").get().asFile
+                    f.text = p.sourceSets.test.runtimeClasspath.files.findAll { it.exists() }.join("\n")
+                }
+            }
+        }
+    }
+}

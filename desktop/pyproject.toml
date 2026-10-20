@@ -47,3 +47,7 @@ target-version = "py311"
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "B", "UP", "ASYNC"]
 ignore = ["B017", "ASYNC109"]
+
+[tool.ruff.lint.per-file-ignores]
+# Process-level scenario scripts: blocking subprocess calls and polling loops are deliberate.
+"tests/lifecycle/*" = ["ASYNC110", "ASYNC221"]

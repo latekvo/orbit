@@ -1,0 +1,57 @@
+{
+ "before": {
+  "c66f62e3": [
+   "Pixel 8",
+   [
+    "lan"
+   ]
+  ],
+  "aa3a635d": [
+   "Pixel 8-2",
+   [
+    "lan"
+   ]
+  ]
+ },
+ "action_before": {
+  "t0": 1792464570.0184445,
+  "result": {
+   "ok": true
+  },
+  "dt": 0.001
+ },
+ "reconnect_s": 1.48,
+ "action_after": {
+  "t0": 1792464577.6196923,
+  "result": {
+   "ok": true
+  },
+  "dt": 0.001
+ },
+ "after": {
+  "c66f62e3": [
+   "Pixel 8",
+   [
+    "lan"
+   ],
+   "connected"
+  ],
+  "aa3a635d": [
+   "Pixel 8-2",
+   [
+    "lan"
+   ],
+   "offline"
+  ]
+ },
+ "lan_records": {
+  "c66f62e3": [
+   "Pixel 8-2._orbit._tcp.local."
+  ],
+  "aa3a635d": [
+   "Pixel 8._orbit._tcp.local."
+  ]
+ },
+ "_outcome": "passed",
+ "_at": "2026-10-20 04:49:37"
+}
