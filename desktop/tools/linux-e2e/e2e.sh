@@ -29,10 +29,10 @@ run() { printf '$ %s\n' "$*"; "$@"; }
 pass() { printf 'PASS %s\n' "$1"; }
 fail() { printf 'FAIL %s\n' "$1"; FAILS=$((FAILS + 1)); }
 check() { local d=$1; shift; if "$@"; then pass "$d"; else fail "$d"; fi; }
-# eventually DESC CMD...: retry CMD for up to 10 s.
+# eventually DESC CMD...: retry CMD for up to $WITHIN (default 10) s.
 eventually() {
     local d=$1; shift
-    for _ in $(seq 50); do "$@" >/dev/null 2>&1 && { pass "$d"; return 0; }; sleep 0.2; done
+    for _ in $(seq $((${WITHIN:-10} * 5))); do "$@" >/dev/null 2>&1 && { pass "$d"; return 0; }; sleep 0.2; done
     fail "$d"; return 1
 }
 orbit_names() { busctl --user list --no-pager --no-legend | awk '{print $1}' | grep '^org\.mpris\.MediaPlayer2\.orbit_' || true; }
@@ -202,7 +202,8 @@ scenario_real() {
     run orbit activities
     say "phone goes away"
     kill "$PHONE_PID"
-    eventually "player vanishes" no_player
+    # orbitd keeps a lost phone's activities for its 15 s reconnect grace, and orbit-mpris its players.
+    WITHIN=20 eventually "player vanishes" no_player
 }
 
 case "${MODE:-stub}" in
