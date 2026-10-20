@@ -154,7 +154,7 @@ class Session:
         self.remote_paired = False
         self.pairing: Pairing | None = None
         self.offset = 0
-        # The phone has sent a `now`, so `offset` estimates its clock (action expiry, spec 5.2).
+        # The phone has sent a `now`: `offset` estimates its clock.
         self.clock_known = False
         self.closed = asyncio.Event()
         self.started = False
@@ -333,7 +333,6 @@ class Session:
     # ---- actions -------------------------------------------------------------------------------
 
     async def action(self, activity: str, action: str, value: Any, has_value: bool, timeout: float) -> dict[str, Any]:
-        """Send an action and wait up to ``timeout`` for its result (spec 5.2 for its expiry)."""
         if self.suspect:
             await self._verified.wait()
         if self.closed.is_set():
@@ -345,7 +344,7 @@ class Session:
         msg: dict[str, Any] = {"t": "action", "req": req, "activity": activity, "action": action}
         if has_value:
             msg["value"] = value
-        # The phone refuses the action from when we stop waiting for it: the probe below, or ``timeout``.
+        # Spec 5.2: the phone refuses the action once we stop waiting for it (the probe below, or ``timeout``).
         budget = min(self.daemon.action_probe + PROBE_RTTS * self.rtt, timeout)
         expires = time.monotonic() + budget
         if self.clock_known:

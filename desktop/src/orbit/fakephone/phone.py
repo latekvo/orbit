@@ -672,7 +672,7 @@ class FakePhone:
         error: str | None = None
         expires = msg.get("expiresAt")
         try:
-            # Spec 5: the laptop has told its user the action failed by then (the Kotlin twin's onAction).
+            # Spec 5.2, as ResponderSession.onAction.
             if "expiresAt" in msg and (isinstance(expires, bool) or not isinstance(expires, int)):
                 raise ActionError("bad_request")
             if expires is not None and now_ms() >= expires:

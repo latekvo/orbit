@@ -440,7 +440,7 @@ async def test_unsent_action_moves_to_the_next_session(ble_phone):
 @pytest.mark.parametrize("loss", ["awaiting result", "write in flight"])
 async def test_action_sent_before_the_link_dropped_is_not_retried(ble_phone, loss, monkeypatch):
     monkeypatch.setattr(FakeGattLink, "mtu", 247)  # the action fits in one write
-    daemon, api, dev_id = await ble_phone()
+    daemon, api, dev_id = await ble_phone(action_probe=0.5)  # the answer waits for the action's expiry
     daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
     await until(lambda: connected_via(daemon, dev_id, "A1"))
     FakeGattLink.hold_results = True
@@ -603,17 +603,21 @@ async def test_stalled_link_is_torn_down_and_clicks_answered_within_the_bound(bl
 
 
 async def test_frame_stalled_mid_way_kills_the_link(ble_phone):
-    daemon, api, dev_id = await ble_phone(stall_after=0.3, dead_after=10.0, keepalive=10.0)
+    daemon, api, dev_id = await ble_phone(stall_after=0.3, dead_after=10.0, keepalive=10.0, action_probe=1.5)
     daemon.on_ble(dev_id[:16], SimpleNamespace(address="A1"))
     await until(lambda: connected_via(daemon, dev_id, "A1"))
     session = daemon.devices[dev_id].session
     link_to("A1").notify_budget = 1  # the action_result frame stops after its first 20 bytes
     loop = asyncio.get_running_loop()
     t0 = loop.time()
+    action = asyncio.ensure_future(
+        api.call("activities.action", {"device": dev_id, "activity": "media:x", "action": "media.play"})
+    )
+    await asyncio.wait_for(session.closed.wait(), 1.0)
+    assert "mid-frame" in session.close_reason and 0.25 < loop.time() - t0
     with pytest.raises(ApiError) as e:
-        await api.call("activities.action", {"device": dev_id, "activity": "media:x", "action": "media.play"})
-    assert e.value.code == "failed"
-    assert "mid-frame" in session.close_reason and 0.25 < loop.time() - t0 < 1.0
+        await action
+    assert e.value.code == "failed" and loop.time() - t0 >= 1.5  # answered once the action expired
 
 
 async def test_slowly_arriving_frame_is_not_mistaken_for_a_dead_link(ble_phone, monkeypatch):

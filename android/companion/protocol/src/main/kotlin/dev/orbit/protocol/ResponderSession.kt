@@ -301,8 +301,7 @@ class ResponderSession(
         val activityId = msg.str("activity")
         val actionId = msg.str("action")
         if (req == null || activityId == null || actionId == null) return result(false, "bad_request")
-        // The initiator has told its user the action failed by then (spec 5): applying it later
-        // (read from a buffer after a freeze or outage) would be a press the user retries.
+        // By then the initiator has told its user the action may have failed (spec 5.2).
         if (msg["expiresAt"] != null) {
             val expiresAt = msg.long("expiresAt") ?: return result(false, "bad_request")
             if (clock() >= expiresAt) return result(false, "expired")
