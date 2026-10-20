@@ -1,0 +1,19 @@
+{
+ "device_after_20s": null,
+ "status": {
+  "version": "0.0.0",
+  "name": "Laptop",
+  "deviceId": "221bc91bdae80570c30dac0357731819",
+  "ble": "off",
+  "bleError": null
+ },
+ "manual_connect": {
+  "t0": 1792464573.2453728,
+  "result": {
+   "id": "799c00cb47f97ce9dbef7293e5fbf7ee"
+  },
+  "dt": 0.003
+ },
+ "_outcome": "passed",
+ "_at": "2026-10-20 04:49:33"
+}

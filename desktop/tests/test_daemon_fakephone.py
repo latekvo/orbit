@@ -214,3 +214,25 @@ async def test_frozen_phone_is_detected_dead(make_daemon, make_phone, api_for):
     await asyncio.sleep(0.6)
     assert await api.call("activities.list") == []
     assert (await _device(api, phone.device_id))["state"] == "offline"
+
+
+async def test_reconnect_does_not_resend_art_the_laptop_holds(make_daemon, make_phone, api_for, monkeypatch):
+    """The laptop's ready lists its cached art keys, so the reconnect snapshot is not stuck behind art."""
+    from orbit.daemon import core
+
+    phone = await make_phone(auto_accept=True)
+    daemon = await make_daemon()
+    api = await api_for(daemon)
+    await pair(api, phone)
+    dev = daemon.devices[phone.device_id]
+    await until(lambda: dev.art)
+    received = []
+    store = core.Daemon.store_art
+    monkeypatch.setattr(
+        core.Daemon, "store_art", lambda self, s, msg: (received.append(msg["key"]), store(self, s, msg))
+    )
+    old = dev.session
+    old.channel.close()  # the link drops; the paired phone is reconnected at once
+    await until(lambda: dev.session not in (None, old) and not dev.stale)
+    assert received == []
+    assert all(a.get("artKey") in dev.art for a in dev.activities.values() if a.get("artKey"))

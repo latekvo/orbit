@@ -1,0 +1,11 @@
+{
+ "orbitd_pid_or_dead": "DEAD",
+ "orbitd_log_tail": [
+  "  File \"/venv/lib/python3.12/site-packages/zeroconf/_utils/net.py\", line 275, in new_socket",
+  "    s.bind(bind_tup)",
+  "OSError: [Errno 98] Address already in use"
+ ],
+ "status_call": "ConnectionRefusedError: [Errno 111] Connection refused",
+ "_outcome": "failed",
+ "_at": "2026-10-20 04:48:29"
+}

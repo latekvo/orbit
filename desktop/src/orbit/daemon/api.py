@@ -22,7 +22,11 @@ log = logging.getLogger(__name__)
 
 # A subscriber that stops reading is dropped rather than buffering events without bound.
 MAX_CLIENT_BUFFER = 32 * 1024 * 1024
+# A client with this much unread output, or this many requests in flight, is not read from until it catches up.
+PAUSE_READING_AT = 1024 * 1024
+MAX_IN_FLIGHT = 64
 CALL_TIMEOUT = 30.0  # every method answers within this (spec/LOCAL_API.md)
+SOCKET_CHECK = 5.0  # a socket file deleted under a running orbitd is re-created this often
 
 
 class StartupError(RuntimeError):
@@ -54,8 +58,32 @@ class ApiServer:
         self.clients: set[Client] = set()
         self._server: asyncio.Server | None = None
         self._tasks: set[asyncio.Task] = set()
+        self._inode: int | None = None
+        self._watch: asyncio.Task | None = None
 
     async def start(self) -> None:
+        await self._listen()
+        self._watch = asyncio.ensure_future(self._watch_socket())
+
+    async def _watch_socket(self) -> None:
+        """Re-create the socket file if something deleted it (e.g. a cleanup of the runtime dir)."""
+        while True:
+            await asyncio.sleep(SOCKET_CHECK)
+            try:
+                inode = self.path.lstat().st_ino
+            except OSError:
+                inode = None
+            if inode == self._inode:
+                continue
+            log.warning("local API socket %s was removed or replaced; listening again", self.path)
+            if self._server:
+                self._server.close()
+            try:
+                await self._listen()
+            except StartupError as e:
+                log.error("%s", e)
+
+    async def _listen(self) -> None:
         try:
             ensure_private_dir(self.path.parent)
             try:
@@ -78,16 +106,20 @@ class ApiServer:
         finally:
             os.umask(old)
         os.chmod(self.path, 0o600)
+        self._inode = self.path.lstat().st_ino
 
     async def stop(self) -> None:
+        if self._watch:
+            self._watch.cancel()
         if self._server:
             self._server.close()
         for c in list(self.clients):
             c.writer.close()
         for task in list(self._tasks):
             task.cancel()
-        with contextlib.suppress(FileNotFoundError):
-            self.path.unlink()
+        with contextlib.suppress(OSError):
+            if self.path.lstat().st_ino == self._inode:  # not another orbitd's socket
+                self.path.unlink()
 
     def broadcast(self, event: str, data: dict[str, Any]) -> None:
         for c in list(self.clients):
@@ -97,8 +129,13 @@ class ApiServer:
     async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         client = Client(writer)
         self.clients.add(client)
+        slots = asyncio.Semaphore(MAX_IN_FLIGHT)
         try:
             while True:
+                # Backpressure: a client that sends requests without reading the answers gets no more work.
+                if writer.transport.get_write_buffer_size() > PAUSE_READING_AT:
+                    await writer.drain()
+                await slots.acquire()
                 try:
                     line = await reader.readline()
                 except ValueError:  # line longer than LINE_LIMIT
@@ -106,10 +143,13 @@ class ApiServer:
                     break
                 if not line:
                     break
-                if line.strip():
-                    task = asyncio.create_task(self._request(client, line))
-                    self._tasks.add(task)
-                    task.add_done_callback(self._tasks.discard)
+                if not line.strip():
+                    slots.release()
+                    continue
+                task = asyncio.create_task(self._request(client, line))
+                self._tasks.add(task)
+                task.add_done_callback(self._tasks.discard)
+                task.add_done_callback(lambda _t: slots.release())
         except ConnectionError:
             pass
         finally:
@@ -123,6 +163,8 @@ class ApiServer:
                 req = json.loads(line)
             except (UnicodeDecodeError, json.JSONDecodeError) as e:
                 raise ApiError("bad_request", f"invalid JSON: {e}") from None
+            except RecursionError:
+                raise ApiError("bad_request", "invalid JSON: nested too deeply") from None
             if not isinstance(req, dict):
                 raise ApiError("bad_request", "request must be a JSON object")
             req_id = req.get("id")

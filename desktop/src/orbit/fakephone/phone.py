@@ -129,6 +129,9 @@ class Session:
                 self.send({"t": "error", "code": "bad_message", "message": f"expected ready, got {t}"})
                 self.close(f"peer sent {t} before ready")
                 return
+            art = msg.get("art")
+            if isinstance(art, list):  # art the laptop already holds (spec 3.4): not resent
+                self._sent_art.update(k for k in art if isinstance(k, str))
             self._on_ready(msg.get("paired") is True)
         elif t == "ping":
             self.send({"t": "pong", "req": msg.get("req")})

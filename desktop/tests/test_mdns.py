@@ -8,6 +8,7 @@ import pytest
 from daemon_helpers import RawPhone, pin_in, until
 from zeroconf.asyncio import AsyncServiceInfo, AsyncZeroconf
 
+from orbit.daemon import discovery
 from orbit.daemon.discovery import SERVICE_TYPE
 from orbit.daemon.timeconv import now_ms
 
@@ -21,7 +22,8 @@ async def session(ch):
     await asyncio.sleep(30)
 
 
-async def test_mdns_discovers_and_autoconnects_only_paired(make_daemon, short_tmp, api_for):
+async def test_mdns_discovers_and_autoconnects_only_paired(make_daemon, short_tmp, api_for, monkeypatch):
+    monkeypatch.setattr(discovery, "INTERFACE_POLL", 0.2)  # expiry checks run on this tick
     async with RawPhone(session, name="Paired Phone") as paired, RawPhone(session, name="Stranger") as stranger:
         azc = AsyncZeroconf()
         infos = []
@@ -49,6 +51,8 @@ async def test_mdns_discovers_and_autoconnects_only_paired(make_daemon, short_tm
             assert not devices[stranger.id]["connected"] and not devices[stranger.id]["paired"]
             assert devices[stranger.id]["name"] == f"Stranger {stranger.id[:6]}"
             assert stranger._writers == []  # never connected to
+            await asyncio.sleep(1.0)  # live records are not taken for expired ones
+            assert await _both(api, paired.id, stranger.id)
         finally:
             for info in infos:
                 await (await azc.async_unregister_service(info))

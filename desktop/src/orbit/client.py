@@ -12,6 +12,8 @@ from typing import Any
 from .paths import socket_path
 
 LINE_LIMIT = 16 * 1024 * 1024
+# orbitd answers every call within 30 s (spec/LOCAL_API.md); past this it is stuck (e.g. stopped).
+CALL_TIMEOUT = 40.0
 
 
 class ApiError(Exception):
@@ -26,6 +28,7 @@ class LocalClient:
         self._reader = reader
         self._writer = writer
         self._next_id = 0
+        self.call_timeout: float | None = CALL_TIMEOUT
         self._pending: dict[int, asyncio.Future] = {}
         self._events: asyncio.Queue[tuple[str, Any] | None] = asyncio.Queue()
         self._task = asyncio.create_task(self._read_loop())
@@ -60,15 +63,21 @@ class LocalClient:
             self._events.put_nowait(None)
 
     async def call(self, method: str, params: dict[str, Any] | None = None) -> Any:
+        """Call ``method``; raises TimeoutError if orbitd does not answer within ``call_timeout`` s."""
         if self._task.done():
             raise ConnectionError("orbitd closed the connection")
         self._next_id += 1
+        req = self._next_id
         fut = asyncio.get_running_loop().create_future()
-        self._pending[self._next_id] = fut
-        line = json.dumps({"id": self._next_id, "method": method, "params": params or {}}) + "\n"
-        self._writer.write(line.encode())
-        await self._writer.drain()
-        return await fut
+        self._pending[req] = fut
+        line = json.dumps({"id": req, "method": method, "params": params or {}}) + "\n"
+        try:
+            async with asyncio.timeout(self.call_timeout):
+                self._writer.write(line.encode())
+                await self._writer.drain()
+                return await fut
+        finally:
+            self._pending.pop(req, None)
 
     async def events(self) -> AsyncIterator[tuple[str, Any]]:
         """Yield ``(event, data)`` pairs; call ``subscribe`` first. Ends when the daemon disconnects."""

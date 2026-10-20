@@ -32,6 +32,8 @@ class PinnedPeer:
     static: bytes
     # "host:port" entered manually (or via adb forward); retried on startup and after disconnects.
     address: str | None = None
+    # The discovered LAN "host:port" that last worked; tried first, also when mDNS finds nothing.
+    last_lan: str | None = None
 
 
 class PeerStore:
@@ -48,6 +50,7 @@ class PeerStore:
                     platform=raw.get("platform", ""),
                     static=b64d(raw["static"]),
                     address=raw.get("address"),
+                    last_lan=raw.get("last_lan"),
                 )
 
     def get(self, peer_id: str) -> PinnedPeer | None:

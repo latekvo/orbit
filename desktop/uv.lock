@@ -279,6 +279,7 @@ dependencies = [
     { name = "bleak" },
     { name = "cryptography" },
     { name = "dbus-fast", marker = "sys_platform == 'linux'" },
+    { name = "ifaddr" },
     { name = "zeroconf" },
 ]
 
@@ -303,6 +304,7 @@ requires-dist = [
     { name = "bleak", specifier = ">=0.22" },
     { name = "cryptography", specifier = ">=42" },
     { name = "dbus-fast", marker = "sys_platform == 'linux'", specifier = ">=2.21" },
+    { name = "ifaddr", specifier = ">=0.2" },
     { name = "pyside6-essentials", marker = "extra == 'applet'", specifier = ">=6.7" },
     { name = "zeroconf", specifier = ">=0.132" },
 ]

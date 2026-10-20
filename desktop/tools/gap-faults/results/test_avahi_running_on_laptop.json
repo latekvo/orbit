@@ -1,0 +1,13 @@
+{
+ "discovered_after_s": 0.1,
+ "avahi_browse": [
+  "UNCONN 0      0        10.232.10.2:5353       0.0.0.0:*    users:((\"python\",pid=25,fd=9))       ",
+  "UNCONN 0      0          127.0.0.1:5353       0.0.0.0:*    users:((\"python\",pid=25,fd=8))       ",
+  "UNCONN 0      0            0.0.0.0:5353       0.0.0.0:*    users:((\"python\",pid=25,fd=7))       ",
+  "UNCONN 0      0            0.0.0.0:5353       0.0.0.0:*    users:((\"avahi-daemon\",pid=16,fd=10))",
+  "UNCONN 0      0               [::]:5353          [::]:*    users:((\"avahi-daemon\",pid=16,fd=11))"
+ ],
+ "reconnect_after_rst_s": 1.35,
+ "_outcome": "passed",
+ "_at": "2026-10-20 04:48:39"
+}

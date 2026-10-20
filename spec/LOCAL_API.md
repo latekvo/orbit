@@ -26,11 +26,11 @@ Newline-delimited JSON, one object per line, UTF-8.
 
 | method | params | result |
 |---|---|---|
-| `status` | - | `{"version": "...", "name": "<this computer>", "deviceId": "...", "ble": "off" \| "starting" \| "scanning" \| "unavailable", "bleError": string \| null}` - `"unavailable"` (Bluetooth off, no adapter or no permission; `bleError` says why) is retried with backoff up to every 30 s |
+| `status` | - | `{"version": "...", "name": "<this computer>", "deviceId": "...", "lan": "off" \| "starting" \| "browsing" \| "unavailable", "lanError": string \| null, "ble": "off" \| "starting" \| "scanning" \| "unavailable", "bleError": string \| null}` - `lan` is mDNS discovery: `"unavailable"` (e.g. UDP 5353 cannot be bound; `lanError` says why) is retried every 10 s, while BLE and manual addresses keep working. BLE `"unavailable"` (Bluetooth off, no adapter or no permission; `bleError` says why) is retried with backoff up to every 5 s; switching Bluetooth off while scanning also makes it `"unavailable"` until it is back on |
 | `subscribe` | - | `true`; the connection then also receives events (below), starting with one of each |
 | `devices.list` | - | `[Device]` |
-| `devices.connect` | `{"id"}` or `{"host", "port"}` | `{"id": "<deviceId>"}` once the handshake completes (pairing may follow); always the real 32-hex id, also when `id` was provisional. Answers within 12 s (else `timeout`, listing the addresses that failed) |
-| `devices.disconnect` | `{"id"}` | `true`; also stops a `"reconnecting"` device from reconnecting |
+| `devices.connect` | `{"id"}` or `{"host", "port"}` | `{"id": "<deviceId>"}` once the handshake completes (pairing may follow); always the real 32-hex id, also when `id` was provisional. An already connected device's session is first checked (it must answer within 4 s, else it is replaced). Answers within 12 s (else `timeout`, listing the addresses that failed) |
+| `devices.disconnect` | `{"id"}` | `true`; also stops a `"reconnecting"` device from reconnecting, including a connection attempt already under way |
 | `devices.forget` | `{"id"}` | `true` - unpairs (sends `unpair` if connected) and removes all stored data |
 | `pairing.list` | - | `[Pairing]` |
 | `pairing.respond` | `{"session", "accept": bool}` | `true` |
@@ -45,13 +45,31 @@ Every call answers within 30 s (else `timeout`, "orbitd gave up after 30 s"); a 
 timeout should be longer than that, or than the method's own bound.
 
 `activities.action` answers within 12 s. On a `"reconnecting"` device it first waits up to
-5 s for the session to come back. An action is re-sent on a new session only if it never left
-this computer, so a toggle is never applied twice. Errors:
+5 s for the session to come back; after the computer wakes from sleep it waits until the
+session has proved alive (or was replaced). An action is re-sent on a new session only if the
+phone cannot have received the whole message (part of it never left this computer; the old
+connection is then reset so that it cannot arrive later), so a toggle is never applied twice.
+A session that neither answers an action nor is still sending data 5 s later is dropped.
+Errors:
 - `not_connected` `"reconnecting"`: the session was not back within 5 s; not sent;
-- `not_connected` `"phone offline"`: the device is `"offline"`; not sent;
+- `not_connected` `"phone offline"` (or the device's `problem`): the device is `"offline"`; not sent;
 - `failed` `"connection lost after the action was sent; it may have been applied"`;
-- `timeout` `"phone did not respond"`: no `action_result` within the bound; it may have been
-  applied.
+- `timeout` `"phone did not respond; it may still be applied"`: no `action_result` within the
+  bound.
+
+## Connecting
+
+orbitd keeps every paired device connected that was not disconnected with `devices.disconnect`.
+It tries the device's LAN addresses (the one that last worked first, then the advertised ones:
+IPv4, routable IPv6, link-local IPv6) a quarter second apart, without waiting for each to time
+out, and BLE 2 s after (at once when every LAN address failed within the last minute); the first
+session wins. After a session that carried the phone's snapshot it reconnects at once; failed
+attempts back off up to 2 s while the device is `"reconnecting"`, up to 5 s for 5 minutes, then
+up to 30 s. A re-announcement over mDNS, a BLE advertisement after a gap, a change of this
+computer's network interfaces and waking from sleep each retry at once. Sessions are checked
+(a `ping` that must draw an answer within a few seconds) when the network changes, when the
+phone announces new addresses, and when the computer wakes, with the activities shown as
+`"stale"` until the check passes.
 
 ## Types
 
@@ -63,7 +81,12 @@ this computer, so a toggle is never applied twice. Errors:
  "transport": "lan" | "ble" | null,
  "address": "192.168.1.20:47820" | null,
  "discovered": ["lan", "ble"],            // currently seen by discovery
- "provisional": false}
+ "provisional": false,
+ "problem": null}                         // or why it cannot be used as it is, for the user, e.g.
+                                          // its address now answers as another device (a reset or
+                                          // reinstalled phone; pairing it again under the same name
+                                          // removes this entry), the phone unpaired this computer, or
+                                          // its manually entered address has not answered for 30 s.
 
 // state: "reconnecting" for up to 15 s after a paired device's session dropped while orbitd
 // keeps trying to get it back ("connected" is false); its last activities stay listed with
@@ -88,9 +111,11 @@ this computer, so a toggle is never applied twice. Errors:
 // local clock (epoch ms):
 //   updatedMs, chrono.baseMs  -> local clock
 //   media.positionAtMs        -> local time at which media.positionMs was valid
+// When the local clock is stepped, these follow it.
 // "stale": true from the moment the session dropped (the device is "reconnecting") until the
 // reconnected phone's snapshot replaces them; if the device does not come back within the
-// grace period they are removed.
+// grace period they are removed. Also true after the computer wakes from sleep, until the
+// session proved alive.
 // "iconKey" / "artKey" are listed only once orbitd holds that art (it may follow the activity,
 // PROTOCOL.md 5.3), so art.get on a listed key succeeds; activities.changed fires again when
 // late art arrives.
