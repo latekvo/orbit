@@ -27,18 +27,19 @@ object SystemUi {
      * Per notification action: null = dropped, false = button, true = overflow.
      * Standard template: non-contextual actions fill [NOTIFICATION_BUTTONS] slots in order.
      * MediaStyle template: the first [MEDIA_BUTTONS] actions are buttons, those without an icon skipped.
-     * Actions without an intent can't be performed and are dropped.
+     * Actions without an intent can't be performed and are dropped, but still take their slot
+     * (the phone shows them disabled).
      */
     fun notificationButtons(actions: List<NotifAction>, mediaStyle: Boolean): List<Boolean?> {
         var slots = NOTIFICATION_BUTTONS
         return actions.mapIndexed { i, a ->
-            when {
-                !a.hasIntent -> null
-                mediaStyle -> !(i < MEDIA_BUTTONS && a.hasIcon)
-                a.contextual -> true
-                slots > 0 -> { slots--; false }
-                else -> true
+            val button = when {
+                mediaStyle -> i < MEDIA_BUTTONS && a.hasIcon
+                a.contextual -> false
+                slots > 0 -> { slots--; true }
+                else -> false
             }
+            if (a.hasIntent) !button else null
         }
     }
 

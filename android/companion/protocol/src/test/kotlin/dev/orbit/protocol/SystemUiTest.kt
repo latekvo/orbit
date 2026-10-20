@@ -111,13 +111,19 @@ class SystemUiTest {
     }
 
     @Test
+    fun mediaStyleIntentlessActionTakesItsSlot() {
+        val actions = listOf(NotifAction("A"), NotifAction("B", hasIntent = false)) + (3..6).map { NotifAction("$it") }
+        assertEquals(listOf(false, null, false, false, false, true), SystemUi.notificationButtons(actions, mediaStyle = true))
+    }
+
+    @Test
     fun genericNotificationShowsThreeButtons() {
         val five = (1..5).map { NotifAction("Action $it") }
         assertEquals(listOf(false, false, false, true, true), SystemUi.notificationButtons(five, mediaStyle = false))
     }
 
     @Test
-    fun contextualActionsOverflowAndIntentlessActionsAreDropped() {
+    fun contextualActionsOverflowAndIntentlessActionsAreDroppedButTakeTheirSlot() {
         val actions = listOf(
             NotifAction("Smart reply", contextual = true),
             NotifAction("Archive"),
@@ -126,7 +132,7 @@ class SystemUiTest {
             NotifAction("Mark as read"),
             NotifAction("Snooze"),
         )
-        assertEquals(listOf(true, false, null, false, false, true), SystemUi.notificationButtons(actions, mediaStyle = false))
+        assertEquals(listOf(true, false, null, false, true, true), SystemUi.notificationButtons(actions, mediaStyle = false))
     }
 
     @Test
