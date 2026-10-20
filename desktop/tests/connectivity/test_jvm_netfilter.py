@@ -40,14 +40,17 @@ async def act(laptop, dev):
     )
 
 
-async def test_netfilter_short_outage_applies_timed_out_actions_late(rig):
+@pytest.mark.parametrize("outage", [8, 20])
+async def test_netfilter_short_outage_never_applies_unanswered_actions_late(rig, outage):
+    """An outage (kernel drops every packet) swallows an action and the user's retry. At 8 s the
+    kernel is still retransmitting the closed connection's bytes when the path comes back."""
     phone, laptop, dev = await direct(rig)
     t0 = time.monotonic()
     drop(phone.port, True)
     try:
         dt1, r1 = await act(laptop, dev)
         retry = asyncio.create_task(act(laptop, dev))
-        await asyncio.sleep(max(0.0, 20 - (time.monotonic() - t0)))
+        await asyncio.sleep(max(0.0, outage - (time.monotonic() - t0)))
     finally:
         drop(phone.port, False)
     t_heal = time.monotonic() - t0
@@ -56,11 +59,11 @@ async def test_netfilter_short_outage_applies_timed_out_actions_late(rig):
     acts = [round(ts - t0, 1) for ts, _ in phone.events("action", t0)]
     states = [(round(t - t0, 1), s) for t, s in laptop.state_log(dev, t0)]
     log(
-        f"netfilter 20 s outage: 1st {dt1:.1f}s {r1!r}; retry {dt2:.1f}s {r2!r}; healed at {t_heal:.1f}s; phone executed at {acts}; laptop states {states}"
+        f"netfilter {outage} s outage: 1st {dt1:.1f}s {r1!r}; retry {dt2:.1f}s {r2!r}; healed at {t_heal:.1f}s; phone executed at {acts}; laptop states {states}"
     )
-    # Not applied as far as the user knows: "timeout", or "not_connected" (never reached the phone).
-    assert isinstance(r1, ApiError) and r1.code in ("timeout", "not_connected")
-    assert len(acts) <= 1
+    assert isinstance(r1, ApiError) and ("may" in r1.message or r1.code == "not_connected")
+    # Applied exactly as often as the user was told it succeeded: nothing arrives late.
+    assert len(acts) == sum(r == {"ok": True} for r in (r1, r2))
 
 
 async def test_netfilter_long_outage_does_not_apply_late(rig):

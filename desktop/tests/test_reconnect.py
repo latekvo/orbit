@@ -408,3 +408,26 @@ def test_link_local_addresses_get_an_interface_to_try():
     lan._interfaces = frozenset({("eth0", "fe80::1"), ("wlan0", "fe80::2"), ("lo", "fe80::1"), ("eth0", "10.0.0.2")})
     scoped = lan._scoped(["10.0.0.9", "fe80::9", "fe80::8%3"])
     assert scoped == ["10.0.0.9", "fe80::9%eth0", "fe80::9%wlan0", "fe80::8%3"]
+
+
+async def test_silent_manual_address_is_reported_until_the_phone_answers(make_daemon, short_tmp, api_for, monkeypatch):
+    """A manually added phone that got a new address (no mDNS to find it) must not just sit offline."""
+    monkeypatch.setattr(core, "MANUAL_SILENT_FOR", 0.5)
+    async with Phone() as phone:
+        port = phone.port
+    pin_in(short_tmp / "daemon", phone.identity, address=f"127.0.0.1:{port}")
+    daemon = await make_daemon()
+    api = await api_for(daemon)
+    (dev,) = await until(lambda: _with_problem(api), timeout=10)
+    assert dev["problem"].startswith(f"nothing answers at 127.0.0.1:{port}")
+    back = Phone(identity=phone.identity)
+    back._server = await asyncio.start_server(back._on_conn, "127.0.0.1", port)
+    try:
+        await until(lambda: session_of(daemon, phone.id), timeout=10)
+        assert [d["problem"] for d in await api.call("devices.list")] == [None]
+    finally:
+        await back.__aexit__(None, None, None)
+
+
+async def _with_problem(api):
+    return [d for d in await api.call("devices.list") if d["problem"]]

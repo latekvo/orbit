@@ -48,8 +48,9 @@ timeout should be longer than that, or than the method's own bound.
 5 s for the session to come back; after the computer wakes from sleep it waits until the
 session has proved alive (or was replaced). An action is re-sent on a new session only if the
 phone cannot have received the whole message (part of it never left this computer; the old
-connection is then reset so that it cannot arrive later), so a toggle is never applied twice. A session that sends nothing back
-within 5 s of an action is dropped. Errors:
+connection is then reset so that it cannot arrive later), so a toggle is never applied twice.
+A session that neither answers an action nor is still sending data 5 s later is dropped.
+Errors:
 - `not_connected` `"reconnecting"`: the session was not back within 5 s; not sent;
 - `not_connected` `"phone offline"` (or the device's `problem`): the device is `"offline"`; not sent;
 - `failed` `"connection lost after the action was sent; it may have been applied"`;
@@ -82,9 +83,10 @@ phone announces new addresses, and when the computer wakes, with the activities 
  "discovered": ["lan", "ble"],            // currently seen by discovery
  "provisional": false,
  "problem": null}                         // or why it cannot be used as it is, for the user, e.g.
-                                          // its address now answers as another device (reset or
-                                          // reinstalled phone), or the phone unpaired this computer.
-                                          // Pairing that phone again (same name) removes this entry.
+                                          // its address now answers as another device (a reset or
+                                          // reinstalled phone; pairing it again under the same name
+                                          // removes this entry), the phone unpaired this computer, or
+                                          // its manually entered address has not answered for 1 min.
 
 // state: "reconnecting" for up to 15 s after a paired device's session dropped while orbitd
 // keeps trying to get it back ("connected" is false); its last activities stay listed with

@@ -28,7 +28,7 @@ PROBE_FLOWING = 1.0
 
 
 class LinkDown(ConnectionError):
-    """The transport is gone. ``sent`` is False only if no byte of the failed frame can have reached the phone."""
+    """The transport is gone. ``sent`` is False only if the phone cannot have the whole failed frame."""
 
     def __init__(self, cause: str, sent: bool) -> None:
         super().__init__(cause)
@@ -467,7 +467,7 @@ class Session:
             if now - self._last_tx >= d.keepalive:
                 self._last_tx = now
                 self._spawn(self._ping())
-                # A ping that draws no byte within stall_after means the link is gone.
+                # A ping that draws no answer within stall_after means the link is gone.
                 self.probe("no answer to a ping", d.stall_after, ping=False)
                 continue
             wake = min(self._rx.last_byte + min(d.dead_after, d.stall_after), self._last_tx + d.keepalive)

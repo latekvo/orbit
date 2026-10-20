@@ -60,6 +60,9 @@ BLE_AFTER_LAN = 2.0
 FAILED_ADDRESS_FOR = 60.0
 # An address that answered as a different device is not tried automatically for this long.
 MISMATCH_FOR = 600.0
+# A device reachable only at its manually entered address that has not answered for this long is
+# shown with a problem: the phone may have a new address.
+MANUAL_SILENT_FOR = 60.0
 # Liveness checks (spec/LOCAL_API.md): after a wake, a network change or before reusing a quiet session.
 PROBE_TIMEOUT = 4.0
 # A LAN session silent this long is checked (answer within LAN_CHECK) when the phone's BLE advertisement shows up.
@@ -744,6 +747,7 @@ class Daemon:
                     failing_since = failing_since or dev.lost_at or now
                     delay = self._retry_delay(failures, now - failing_since)
                     log.info("connecting to %s (%s) failed: %s; retrying in %g s", dev.name, dev.id, error, delay)
+                    self._manual_silent(dev, now - failing_since)
                     if self._lan and any(r.kind == "lan" for r in self._lan_routes(dev)):
                         self._lan.refresh(list(dev.lan))
                     await self._wait_wake(dev, delay, min_wait=min(RECONNECT_MIN_GAP, delay))
@@ -947,6 +951,14 @@ class Daemon:
             log.warning("%s (%s): %s", dev.name, dev.id, problem)
             dev.problem = problem
             self.changed("devices")
+
+    def _manual_silent(self, dev: Device, failing_for: float) -> None:
+        pin = self.store.get(dev.id)
+        if dev.problem or not pin or not pin.address or dev.lan or dev.ble or failing_for < MANUAL_SILENT_FOR:
+            return
+        dev.problem = f"nothing answers at {pin.address}: if the phone's address changed, connect to the new one"
+        log.warning("%s (%s): %s", dev.name, dev.id, dev.problem)
+        self.changed("devices")
 
     def _drop_if_superseded(self, old: Device, new_id: str, new_name: str) -> bool:
         """Forget ``old`` if it is the same phone as the paired ``new_id`` under a new identity (reset,
