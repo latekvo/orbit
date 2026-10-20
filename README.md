@@ -10,7 +10,7 @@ over the local network (mDNS + TCP) or Bluetooth LE.
  │ NotificationListener      │                   │ orbitd (daemon)              │
  │ MediaSessionManager       │  LAN: mDNS + TCP  │  ├─ discovery (mDNS, BLE)    │
  │        │                  │◄─────────────────►│  ├─ pairing + encryption     │
- │ Orbit companion           │  BLE: GATT stream │  └─ local API (Unix socket)  │
+ │ Orbit companion           │  BLE: L2CAP/GATT  │  └─ local API (Unix socket)  │
  │  (Responder: advertises,  │                   │        ▲          ▲          │
  │   pairs, streams          │                   │  orbit-applet   orbit CLI    │
  │   activities, runs        │                   │  (tray/menu     MPRIS bridge │
@@ -89,6 +89,9 @@ otherwise over Bluetooth LE.
   **Diagnostics** section shows the event log (copy/share it when reporting a bug).
 - **Phone reset or reinstalled:** `orbit status` says so under the device; pair it again, and
   `orbit forget` the old entry if it is still listed.
+- **Bluetooth transport:** on macOS a BLE session runs over an L2CAP channel when the phone offers
+  one, else over GATT; the `BLE link to ...` log line says which and why. `ORBIT_BLE_TRANSPORT=gatt`
+  or `=l2cap` (no fallback) forces one, e.g. for `desktop/tools/ble-bench`.
 - **Several daemons:** each needs its own `--config-dir` (one identity runs once) and socket
   (`ORBIT_SOCKET` / `--socket`).
 
