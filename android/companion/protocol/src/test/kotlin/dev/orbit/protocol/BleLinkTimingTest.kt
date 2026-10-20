@@ -16,9 +16,9 @@ import kotlin.random.Random
 
 /**
  * Responder output paced like BleServer's TX notifications: one [chunk]-byte notification per
- * [intervalMs] (BleServer waits for onNotificationSent before the next one, i.e. about one per
- * connection event). 244 bytes is BleServer's cap (MTU 247+); 15-30 ms is a typical connection
- * interval with a macOS or BlueZ central.
+ * [intervalMs] (BleServer waits for onNotificationSent before the next one). 244 bytes (one
+ * link-layer packet) every 30 ms (a typical macOS or BlueZ connection interval) is one per
+ * connection event, faster than measured phones, which take about three intervals each.
  */
 private class NotificationPacedOutput(private val out: OutputStream, private val chunk: Int, private val intervalMs: Long) : OutputStream() {
     override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)

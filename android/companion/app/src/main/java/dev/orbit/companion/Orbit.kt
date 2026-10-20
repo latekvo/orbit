@@ -123,9 +123,9 @@ class Orbit private constructor(private val context: Context) : SessionHost {
     /**
      * Runs a responder session over [stream] on a background thread, or closes [stream] while not
      * serving. A session from a network [address] counts against the unpaired-session limits;
-     * beyond them the oldest unpaired one closes.
+     * beyond them the oldest unpaired one closes. Returns the session, or null if refused.
      */
-    fun startSession(stream: ByteStream, transport: String, address: String? = null) {
+    fun startSession(stream: ByteStream, transport: String, address: String? = null): ResponderSession? {
         val session = ResponderSession(
             stream, transport, identity, deviceName, "android", hub, this, scheduler,
             elapsed = SystemClock::elapsedRealtime, artSizer = artSizer,
@@ -134,7 +134,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
             if (!serving) {
                 EventLog.log("refused a $transport connection: not serving")
                 runCatching { stream.close() }
-                return
+                return null
             }
             sessions[session.id] = session
         }
@@ -145,6 +145,7 @@ class Orbit private constructor(private val context: Context) : SessionHost {
         EventLog.log("session ${session.id} open ($transport)")
         sessionChanged(session)
         sessionThreads.execute { session.run() }
+        return session
     }
 
     fun session(id: Long): ResponderSession? = sessions[id]
