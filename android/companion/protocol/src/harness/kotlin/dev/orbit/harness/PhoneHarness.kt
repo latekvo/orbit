@@ -82,7 +82,7 @@ class PhoneHarness(private val opts: Map<String, String>) : SessionHost {
     private var port = opts["port"]?.toInt() ?: 0
     private val bind = opts["bind"] ?: "127.0.0.1"
     private val accepted = AtomicInteger()
-    private val refused = AtomicInteger()
+    private val evicted = AtomicInteger()
 
     private fun loadIdentity(): KeyPair {
         val f = File(state, "identity.key")
@@ -150,11 +150,10 @@ class PhoneHarness(private val opts: Map<String, String>) : SessionHost {
 
     private fun startSession(stream: ByteStream, transport: String, address: String, remotePort: Int) {
         val session = ResponderSession(stream, transport, identity, name, "android", hub, this, scheduler, timeouts = timeouts)
-        if (!unauthenticated.admit(session.id, address)) {
-            refused.incrementAndGet()
-            emit("refused", "address" to address, "port" to remotePort)
-            runCatching { stream.close() }
-            return
+        unauthenticated.admit(session.id, address)?.let { evicted ->
+            this.evicted.incrementAndGet()
+            emit("evicted", "session" to evicted, "for" to session.id, "address" to address)
+            sessions[evicted]?.shutdown("too many unpaired sessions")
         }
         sessions[session.id] = session
         emit("session_open", "session" to session.id, "address" to address, "port" to remotePort)
@@ -304,7 +303,7 @@ class PhoneHarness(private val opts: Map<String, String>) : SessionHost {
             "unauthenticated" to synchronized(unauthenticated) { held.size },
             "schedulerQueue" to scheduler.queue.size,
             "accepted" to accepted.get(),
-            "refused" to refused.get(),
+            "evicted" to evicted.get(),
             "actions" to counts(actionCounts.mapValues { it.value.get() }),
         )
     }

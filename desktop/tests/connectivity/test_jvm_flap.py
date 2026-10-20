@@ -29,7 +29,7 @@ async def rss_kb(pid: int) -> int:
 
 
 def summary(st):
-    keep = ("threads", "fds", "heapUsed", "sessions", "unauthenticated", "schedulerQueue", "accepted", "refused")
+    keep = ("threads", "fds", "heapUsed", "sessions", "unauthenticated", "schedulerQueue", "accepted", "evicted")
     return {k: st[k] for k in keep} | {
         "send_threads": st["threadNames"].get("orbit-send-N", 0),
         "session_threads": st["threadNames"].get("orbit-session", 0),

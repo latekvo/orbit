@@ -1,7 +1,7 @@
 package dev.orbit.companion
 
 import org.junit.Assert.assertEquals
-import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.io.IOException
@@ -13,21 +13,20 @@ import java.util.concurrent.TimeUnit
 
 class TransportLimitsTest {
     @Test
-    fun unauthenticatedSessionsAreCappedPerAddressAndInTotal() {
+    fun unauthenticatedSessionsAreCappedPerAddressAndInTotalByEvictingTheOldest() {
         val gate = UnauthenticatedSessions(maxTotal = 3, maxPerAddress = 2)
-        assertTrue(gate.admit(1, "10.0.0.1"))
-        assertTrue(gate.admit(2, "10.0.0.1"))
-        assertFalse(gate.admit(3, "10.0.0.1"))
-        assertTrue(gate.admit(4, "10.0.0.2"))
-        assertFalse(gate.admit(5, "10.0.0.3"))
-        gate.release(1)
-        gate.release(1) // idempotent: must not free a second slot
-        assertTrue(gate.admit(6, "10.0.0.1"))
-        assertFalse(gate.admit(7, "10.0.0.3"))
-        gate.release(99) // unknown id
-        assertFalse(gate.admit(8, "10.0.0.3"))
+        assertNull(gate.admit(1, "10.0.0.1"))
+        assertNull(gate.admit(2, "10.0.0.2"))
+        assertNull(gate.admit(3, "10.0.0.2"))
+        assertEquals(2L, gate.admit(4, "10.0.0.2")) // per address: the oldest from there, not the oldest overall
+        assertEquals(1L, gate.admit(5, "10.0.0.3")) // in total: the oldest overall
+        gate.release(1) // already evicted: frees nothing
+        assertEquals(3L, gate.admit(6, "10.0.0.1"))
         gate.release(4)
-        assertTrue(gate.admit(9, "10.0.0.3"))
+        gate.release(4) // idempotent
+        assertNull(gate.admit(7, "10.0.0.1"))
+        gate.release(99) // unknown id
+        assertEquals(5L, gate.admit(8, "10.0.0.2"))
     }
 
     /** accept() fails [failures] times, succeeds once, fails twice more, then the server closes. */

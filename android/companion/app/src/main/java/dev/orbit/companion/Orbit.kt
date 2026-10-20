@@ -103,14 +103,13 @@ class Orbit private constructor(private val context: Context) : SessionHost {
 
     /**
      * Runs a responder session over [stream] on a background thread. A session from a network
-     * [address] counts against the unpaired-session limits and is refused (stream closed) beyond them.
+     * [address] counts against the unpaired-session limits; beyond them the oldest unpaired one closes.
      */
     fun startSession(stream: ByteStream, transport: String, address: String? = null) {
         val session = ResponderSession(stream, transport, identity, deviceName, "android", hub, this, scheduler)
-        if (address != null && !unauthenticated.admit(session.id, address)) {
-            EventLog.log("refusing $transport session from $address: too many unpaired sessions")
-            runCatching { stream.close() }
-            return
+        address?.let { unauthenticated.admit(session.id, it) }?.let { evicted ->
+            EventLog.log("closing unpaired session $evicted for one from $address: too many unpaired sessions")
+            sessions[evicted]?.shutdown("too many unpaired sessions")
         }
         sessions[session.id] = session
         EventLog.log("session ${session.id} open ($transport)")

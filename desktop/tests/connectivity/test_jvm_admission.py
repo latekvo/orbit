@@ -59,8 +59,8 @@ async def test_paired_laptop_gets_in_during_pairing_flood(rig):
         got_in = t_con - t0
     except TimeoutError:
         got_in = None
-    refused = phone.events("refused", t0)
-    log(f"paired laptop during flood: reconnected after {got_in}; phone refused {len(refused)} of its attempts")
+    evicted = phone.events("evicted", t0)
+    log(f"paired laptop during flood: reconnected after {got_in}; phone evicted {len(evicted)} unpaired sessions")
     log("states", [(round(t - t0, 1), s) for t, s in laptop.state_log(dev, t0)])
     stop.set()
     await asyncio.gather(*holders)
@@ -73,22 +73,30 @@ async def test_paired_laptop_gets_in_during_pairing_flood(rig):
     )
 
 
-async def test_handshake_slots_released_on_timeout(rig):
-    """Idle TCP connections (no commit) hold a slot only until the 10 s handshake timeout."""
+async def test_new_connection_displaces_the_oldest_from_its_address(rig):
+    """Four idle TCP connections (no commit) fill one address's slots: a fifth one gets in, and the
+    oldest of the four is closed rather than holding its slot until the 10 s handshake timeout."""
     phone, proxy, laptop = await rig(laptop=False)
-    socks = []
+    conns = []
     for _ in range(4):
-        r, w = await asyncio.open_connection("127.0.0.1", phone.port, local_addr=(SOURCES[0], 0))
-        socks.append(w)
+        conns.append(await asyncio.open_connection("127.0.0.1", phone.port, local_addr=(SOURCES[0], 0)))
+        await asyncio.sleep(0.1)
     await asyncio.sleep(0.5)
     t0 = time.monotonic()
     r, w = await asyncio.open_connection("127.0.0.1", phone.port, local_addr=(SOURCES[0], 0))
-    fifth = await r.read(1)
-    ev = await phone.wait_event("session_closed", 15, t0, lambda e: e["reason"] == "handshake timeout")
-    t_free = time.monotonic() - t0
+    first = await asyncio.wait_for(conns[0][0].read(1), 5)
+    t_closed = time.monotonic() - t0
+    ev = await phone.wait_event("evicted", 5, t0)
+    w.write(b"\x00")  # the fifth is being served: its handshake is still open
+    await w.drain()
+    with contextlib.suppress(TimeoutError):
+        await asyncio.wait_for(r.read(1), 1)
+    st = await phone.stats()
     log(
-        f"5th connection from one address: read {fifth!r} (refused); first slot freed after {t_free:.1f}s ({ev['reason']})"
+        f"5th connection from one address: oldest closed after {t_closed:.2f}s (read {first!r}), "
+        f"evicted {ev}; phone sessions {st['sessionStates']}"
     )
-    for w2 in socks + [w]:
+    for _, w2 in conns + [(r, w)]:
         w2.close()
-    assert fifth == b""
+    assert first == b""
+    assert st["sessionStates"] == {"HANDSHAKE": 4}
