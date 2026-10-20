@@ -61,9 +61,8 @@ class ResponderSession(
     private val clock: () -> Long = System::currentTimeMillis,
     private val timeouts: SessionTimeouts = SessionTimeouts(),
     /**
-     * Monotonic ms for deadlines and keepalive, unaffected by wall-clock steps. It must keep counting
-     * while the device sleeps (Android: SystemClock.elapsedRealtime), or a frozen process misses
-     * its deadlines on resume.
+     * Monotonic ms for deadlines and keepalive. It must keep counting while the device sleeps
+     * (Android: SystemClock.elapsedRealtime), or a frozen process misses its deadlines on resume.
      */
     private val elapsed: () -> Long = { System.nanoTime() / 1_000_000 },
     private val handshake: (FrameStream) -> SecureChannel = { Handshake.respond(it, identity, name, platform) },
@@ -301,7 +300,7 @@ class ResponderSession(
 
     private fun tick() {
         val now = elapsed()
-        if (state == State.CLOSED || expire(now)) return
+        if (expire(now)) return
         if (state != State.HANDSHAKE && now - lastSent >= timeouts.pingAfterMs) {
             lastSent = now // avoid queueing a ping per tick while a slow link drains
             enqueue { send(buildJsonObject { put("t", "ping"); put("req", ++nextPing) }) }

@@ -3,8 +3,8 @@ package dev.orbit.companion
 /**
  * Admission limits for sessions that are not yet paired (handshake, unpaired, pairing): anyone on
  * the network can open those, so they are capped in total and per remote address. At a limit the
- * oldest session counted against it gives way instead of the new one being refused: pairing holds
- * a slot for up to 120 s, and refusing would lock a paired peer out for that long. Thread-safe.
+ * oldest session counted against it gives way: pairing holds a slot for up to 120 s, and refusing
+ * the new one would lock a paired peer out that long. Thread-safe.
  */
 class UnauthenticatedSessions(private val maxTotal: Int, private val maxPerAddress: Int) {
     private val held = LinkedHashMap<Long, String>()
