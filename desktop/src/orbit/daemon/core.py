@@ -62,7 +62,7 @@ FAILED_ADDRESS_FOR = 60.0
 MISMATCH_FOR = 600.0
 # A device reachable only at its manually entered address that has not answered for this long is
 # shown with a problem: the phone may have a new address.
-MANUAL_SILENT_FOR = 60.0
+MANUAL_SILENT_FOR = 30.0
 # Liveness checks (spec/LOCAL_API.md): after a wake, a network change or before reusing a quiet session.
 PROBE_TIMEOUT = 4.0
 # A LAN session silent this long is checked (answer within LAN_CHECK) when the phone's BLE advertisement shows up.

@@ -86,7 +86,7 @@ phone announces new addresses, and when the computer wakes, with the activities 
                                           // its address now answers as another device (a reset or
                                           // reinstalled phone; pairing it again under the same name
                                           // removes this entry), the phone unpaired this computer, or
-                                          // its manually entered address has not answered for 1 min.
+                                          // its manually entered address has not answered for 30 s.
 
 // state: "reconnecting" for up to 15 s after a paired device's session dropped while orbitd
 // keeps trying to get it back ("connected" is false); its last activities stay listed with

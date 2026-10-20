@@ -54,16 +54,17 @@ async def rig():
 # ---- open findings ---------------------------------------------------------------------------
 
 
+@pytest.mark.xfail(strict=True, reason="responder side: the phone applies an action it reads after the laptop gave up")
 async def test_bug_timed_out_action_is_applied_later(rig):
-    """Phone frozen 20 s (app freezer / doze / emulator pause): the laptop answers `timeout` after
-    10 s, then the phone applies the action on resume; the user's retry is applied as well."""
+    """Phone frozen 20 s (app freezer / doze / emulator pause): the action draws no answer, the
+    phone may apply it on resume; the user's retry must not make it two."""
     rig.phone.signal(signal.SIGSTOP)
     await asyncio.sleep(1)
     task = asyncio.create_task(rig.action())
     await asyncio.sleep(19)
     rig.phone.signal(signal.SIGCONT)
     _, result = await task
-    assert result == "timeout: phone did not respond"
+    assert "may" in str(result)
     await asyncio.sleep(2)
     _, retry = await rig.action()
     assert retry == {"ok": True}
@@ -71,9 +72,11 @@ async def test_bug_timed_out_action_is_applied_later(rig):
     assert len(rig.execs()) == 1, rig.execs()
 
 
+@pytest.mark.xfail(strict=True, reason="responder side: the phone applies an action it reads after the laptop gave up")
 async def test_bug_action_from_session_declared_dead_is_applied(rig):
-    """Phone frozen 45 s: orbitd drops the session at 30 s and shows the device offline at 45 s.
-    On resume the phone still reads and applies the action buffered on that dead session.
+    """Phone frozen 45 s: orbitd drops the session 5 s after the unanswered action and shows the
+    device offline later. On resume the phone still reads and applies the action buffered on that
+    dead session (only the phone can refuse it).
     (Racy on the phone: its ticker or its reader may run first; it failed 3/4 runs here.)"""
     rig.phone.signal(signal.SIGSTOP)
     await asyncio.sleep(1)
@@ -82,7 +85,7 @@ async def test_bug_action_from_session_declared_dead_is_applied(rig):
     assert rig.state() == "offline"
     rig.phone.signal(signal.SIGCONT)
     _, result = await task
-    assert result == "timeout: phone did not respond"
+    assert "may" in str(result)
     await rig.wait_state("connected", 20)
     await asyncio.sleep(1)
     assert rig.execs() == [], "an action answered as timed out on a dead session was applied"

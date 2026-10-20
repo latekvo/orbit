@@ -14,7 +14,7 @@ import time
 from pathlib import Path
 
 from orbit.client import LINE_LIMIT, LocalClient
-from rig import REPO, Rig, free_port
+from rig import JVMPHONE, REPO, Rig, free_port
 
 IMAGE = "orbit-conn-rig"
 NET = "cad-net"
@@ -44,7 +44,7 @@ def setup() -> int:
             sh("docker", "rm", "-f", name)
         extra = []
         if name == PHONE:
-            extra = ["-v", f"{REPO}/android/companion/jvmphone/build/install/jvmphone:/jvm:ro"]
+            extra = ["-v", f"{JVMPHONE.parent.parent}:/jvm:ro"]
         else:
             api_port = free_port()
             extra = ["-v", f"{REPO}/desktop:/src:ro", "-p", f"127.0.0.1:{api_port}:7000",

@@ -215,7 +215,8 @@ async def ip_change():
             t = await rig.wait_state("connected", 60)
         except TimeoutError:
             t = None
-        return {"connected_at_s": t, "timeline": rig.timeline, **closes(rig)}
+        problems = [d.get("problem") for d in await rig.client.call("devices.list")]
+        return {"connected_at_s": t, "problems": problems, "timeline": rig.timeline, **closes(rig)}
     finally:
         await rig.close()
         rig.net_disconnect()
