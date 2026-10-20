@@ -1,6 +1,6 @@
-"""Real orbitd against the real companion app on an Android emulator, over ``adb forward``.
+"""Real orbitd against the real companion app on an Android emulator, over ``adb forward`` or the emulator NAT.
 
-    ORBIT_EMU_SERIAL=emulator-5554 uv run python tools/conn_android/emu_scenarios.py <name> ...
+    ORBIT_EMU_SERIAL=emulator-5554 [ORBIT_EMU_ROUTE=redir] uv run python tools/conn_android/emu_scenarios.py <name> ...
 
 Prerequisites (once): companion and sample producer installed, notification access, POST_NOTIFICATIONS
 and Bluetooth granted, the companion started, sample producers running
