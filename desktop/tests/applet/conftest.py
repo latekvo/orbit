@@ -14,6 +14,22 @@ def qapp_args():
     return ["orbit-applet-tests"]
 
 
+@pytest.fixture(scope="session", autouse=True)
+def _release_qt_objects(qapp):
+    # Widgets tests leave behind would otherwise be freed by Python's shutdown after Qt's, which
+    # segfaults on Linux ("shared QObject was deleted directly").
+    yield
+    import gc
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+
+    for w in qapp.topLevelWidgets():
+        w.close()
+        w.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+    gc.collect()
+
+
 @pytest.fixture(autouse=True)
 def _styled(qapp):
     from orbit.applet import theme
