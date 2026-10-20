@@ -288,6 +288,10 @@ def test_pending_requests_fail_on_disconnect(qtbot, client, mock):
     qtbot.wait(200)
     mock.stop()
     qtbot.waitUntil(lambda: bool(results), timeout=3000)
+    assert results == [(None, {"code": model.ORBITD_LOST, "message": "lost the connection to orbitd"})]
+    results.clear()
+    client.request("status", None, lambda r, e: results.append((r, e)))  # never sent
+    qtbot.waitUntil(lambda: bool(results), timeout=1000)
     assert results == [(None, {"code": model.ORBITD_DOWN, "message": "orbitd is not running"})]
 
 
@@ -403,7 +407,8 @@ def test_add_by_address(qtbot, client, mock):
 
     page.address.setText("unreachable.invalid:47820")
     qtbot.mouseClick(page.add_button, Qt.MouseButton.LeftButton)
-    qtbot.waitUntil(lambda: "connection refused" in page.message.text())
+    qtbot.waitUntil(lambda: page.message.text() == "unreachable.invalid:47820 isn't reachable")
+    assert page.message.toolTip() == "connection refused"
     assert page.address.text() == "unreachable.invalid:47820"
 
 

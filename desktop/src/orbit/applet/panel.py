@@ -24,7 +24,17 @@ from shiboken6 import isValid
 from . import icons
 from .cards import ActivityCard, ArtView, ElidedLabel
 from .client import DaemonClient
-from .model import activity_key, device_state, device_status_text, devices_summary, now_ms, parse_host_port
+from .model import (
+    ORBITD_CODES,
+    activity_key,
+    bluetooth_problem,
+    connect_failure,
+    device_state,
+    device_status_text,
+    devices_summary,
+    now_ms,
+    parse_host_port,
+)
 from .theme import Theme
 
 log = logging.getLogger("orbit.applet.panel")
@@ -33,6 +43,9 @@ PANEL_WIDTH = 384
 PANEL_MAX_HEIGHT = 600
 TICK_MS = 250
 FORGET_CONFIRM_MS = 4000
+MESSAGE_VISIBLE_MS = 6000
+# A card's message (e.g. "may have gone through") outlives the card while orbitd restarts.
+LOST_NOTICE_S = 60.0
 
 
 def compute_panel_position(anchor: QRect, size: QSize, available: QRect, margin: int = 8) -> QPoint:
@@ -99,6 +112,7 @@ class ActivitiesPage(QWidget):
         self.theme = theme
         self.cards: dict[tuple[str, str], ActivityCard] = {}
         self._headers: list[QWidget] = []
+        self._notices: dict[tuple[str, str], tuple[str, bool, float]] = {}  # key -> text, gentle, until
 
         lay = QVBoxLayout(self)
         lay.setContentsMargins(0, 0, 0, 0)
@@ -122,7 +136,12 @@ class ActivitiesPage(QWidget):
         client.activitiesChanged.connect(self.refresh)
         client.devicesChanged.connect(self.refresh)
         client.connectedChanged.connect(self.refresh)
+        client.statusChanged.connect(self._on_status)
         self.refresh()
+
+    def _on_status(self, *_: Any) -> None:
+        if self.stack.currentWidget() is self.empty:
+            self._update_empty()
 
     def tick(self, now: float) -> None:
         for card in self.cards.values():
@@ -134,6 +153,8 @@ class ActivitiesPage(QWidget):
 
         # One activity the UI cannot render is logged and left out; it never hides the others.
         activities, seen = [], set()
+        t = time.monotonic()
+        self._notices = {k: v for k, v in self._notices.items() if v[2] > t}
         for a in self.client.activities:
             if not isinstance(a, dict) or not isinstance(a.get("id"), str) or not a["id"]:
                 continue
@@ -141,7 +162,9 @@ class ActivitiesPage(QWidget):
             card = self.cards.get(key)
             try:
                 if card is None:
-                    self.cards[key] = ActivityCard(self.client, self.theme, a)
+                    card = self.cards[key] = ActivityCard(self.client, self.theme, a)
+                    if notice := self._notices.pop(key, None):
+                        card.show_error(notice[0], gentle=notice[1])
                 else:
                     card.update_activity(a)
             except Exception:
@@ -153,7 +176,11 @@ class ActivitiesPage(QWidget):
             activities.append(a)
         for key in list(self.cards):
             if key not in seen:
-                self.cards.pop(key).deleteLater()
+                card = self.cards.pop(key)
+                if not self.client.connected and not card.error.isHidden():
+                    gentle = card.error.property("role") == "notice"
+                    self._notices[key] = (card.error.text(), gentle, t + LOST_NOTICE_S)
+                card.deleteLater()
 
         # Re-lay out: group by device (in daemon order) when more than one device is involved.
         for h in self._headers:
@@ -188,14 +215,19 @@ class ActivitiesPage(QWidget):
             self._update_empty()
 
     def _update_empty(self) -> None:
+        ble = bluetooth_problem(self.client.status) if self.client.connected else None
+        wifi_only = f" {ble[0]}, so Orbit can only use Wi-Fi." if ble else ""
         if not self.client.connected:
+            lost = " Your last action may have gone through before it stopped." if self._notices else ""
             self.empty.set_state(
-                "orbitd is not running", "Start the Orbit daemon (orbitd). This panel reconnects automatically."
+                "orbitd is not running", f"Start the Orbit daemon (orbitd). This panel reconnects automatically.{lost}"
             )
         elif not any(d.get("paired") for d in self.client.devices):
             self.empty.set_state(
                 "No phone paired yet",
-                "Open Orbit on your phone on the same Wi-Fi or nearby with Bluetooth, then pair it here.",
+                "Open Orbit on your phone on the same Wi-Fi, then pair it here." + wifi_only
+                if ble
+                else "Open Orbit on your phone on the same Wi-Fi or nearby with Bluetooth, then pair it here.",
                 "Pair a device",
             )
         elif back := [d for d in self.client.devices if d.get("paired") and device_state(d) == "reconnecting"]:
@@ -206,7 +238,8 @@ class ActivitiesPage(QWidget):
         elif not any(d.get("paired") and d.get("connected") for d in self.client.devices):
             self.empty.set_state(
                 "No phone connected",
-                "Your paired devices are out of reach. Open Orbit on your phone or connect it from the devices page.",
+                "Your paired devices are out of reach. Open Orbit on your phone or connect it from the devices page."
+                + wifi_only,
                 "Devices",
             )
         else:
@@ -246,6 +279,11 @@ class DeviceRow(QFrame):
         lay.addLayout(self._buttons_box)
         self._confirm = QTimer(self, singleShot=True)
         self._confirm.timeout.connect(lambda: self.buttons["Forget"].setText("Forget"))
+        self.error: str | None = None
+        self._error_detail = ""
+        self._pairing = False
+        self._error_timer = QTimer(self, singleShot=True)
+        self._error_timer.timeout.connect(lambda: self.show_error(None))
         self.update_device(device, pairing=False)
 
     @property
@@ -254,12 +292,13 @@ class DeviceRow(QFrame):
 
     def update_device(self, device: dict, pairing: bool) -> None:
         self.device = device
+        self._pairing = pairing
         theme = self.page.theme
         state = device_state(device)
         color = {"connected": theme.accent, "reconnecting": theme.mix(theme.accent, 0.5)}.get(state, theme.muted)
         self.glyph.setPixmap(icons.icon("phone", color).pixmap(QSize(22, 22)))
         self.name.setFullText(device.get("name") or device.get("id", ""))
-        self.status.setFullText("Confirm the pairing code" if pairing else device_status_text(device))
+        self._show_status()
         self.setToolTip(device.get("address") or "")
         # A reconnecting device keeps "Disconnect": that also stops orbitd from reconnecting.
         kind = (True, state != "offline") if device.get("paired") else (False,)
@@ -270,6 +309,27 @@ class DeviceRow(QFrame):
         if pair is not None and not self.busy:
             pair.setEnabled(not pairing)
             pair.setText("Pairing..." if pairing else "Pair")
+
+    def show_error(self, text: str | None, detail: str = "") -> None:
+        """Shows `text` in place of the status line for a while; `detail` goes to its tooltip."""
+        self.error, self._error_detail = text, detail
+        if text:
+            self._error_timer.start(MESSAGE_VISIBLE_MS)
+        self._show_status()
+
+    def _show_status(self) -> None:
+        if self.error:
+            text, role = self.error, "error"
+        else:
+            text = "Confirm the pairing code" if self._pairing else device_status_text(self.device)
+            role = "muted"
+        self.status.setFullText(text)
+        if self.error:
+            self.status.setToolTip(self._error_detail)
+        if self.status.property("role") != role:
+            self.status.setProperty("role", role)
+            self.status.style().unpolish(self.status)
+            self.status.style().polish(self.status)
 
     def _rebuild_buttons(self) -> None:
         while self._buttons_box.count():
@@ -313,10 +373,22 @@ class DeviceRow(QFrame):
                 button.setText(name)
             self.update_device(self.device, self.page.pairing_pending(self.device_id))
             if error:
-                self.page.show_message(f"{error.get('message') or error.get('code')}", error=True)
+                self.show_error(self._failure(method, error), str(error.get("message") or error.get("code")))
+            elif self.error:
+                self.show_error(None)
 
+        self.show_error(None)
         # The id is read at click time: a provisional row may have been re-keyed meanwhile.
         self.page.client.request(method, {"id": self.device_id}, done)
+
+    def _failure(self, method: str, error: dict) -> str:
+        target = self.device.get("name") or "the phone"
+        if method == "devices.connect":
+            return connect_failure(error, target)
+        verb = "disconnect" if method == "devices.disconnect" else "forget"
+        if error.get("code") in ORBITD_CODES:
+            return f"Couldn't {verb} {target}: {error.get('message')}"
+        return f"Couldn't {verb} {target}"
 
     def _forget(self) -> None:
         forget = self.buttons["Forget"]
@@ -346,6 +418,12 @@ class DevicesPage(QWidget):
         scroll.setWidget(body)
         lay.addWidget(scroll)
 
+        self.bluetooth = QLabel()
+        self.bluetooth.setObjectName("bluetoothNotice")
+        self.bluetooth.setProperty("role", "notice")
+        self.bluetooth.setWordWrap(True)
+        self.bluetooth.hide()
+        self.list.addWidget(self.bluetooth)
         self.rows_box = QVBoxLayout()
         self.rows_box.setSpacing(6)
         self.list.addLayout(self.rows_box)
@@ -378,6 +456,7 @@ class DevicesPage(QWidget):
         client.devicesChanged.connect(self.refresh)
         client.pairingsChanged.connect(self.refresh)
         client.connectedChanged.connect(self.refresh)
+        client.statusChanged.connect(self.refresh)
         self.refresh()
 
     def pairing_pending(self, device_id: str) -> bool:
@@ -429,11 +508,17 @@ class DevicesPage(QWidget):
             self._section("Nearby")
             for r in nearby:
                 self.rows_box.addWidget(r)
+        ble = bluetooth_problem(self.client.status) if self.client.connected else None
+        self.bluetooth.setVisible(ble is not None)
+        if ble:
+            self.bluetooth.setText(f"<b>{ble[0]}</b> - phones are found over Wi-Fi only. {ble[1]}")
+            self.bluetooth.setToolTip(str(self.client.status.get("bleError") or ""))
         if self.client.connected and not devices:
             self._section("No devices found")
             hint = QLabel(
-                "Open Orbit on your phone on the same Wi-Fi network, or with Bluetooth on, "
-                "and it will appear here. You can also add it by address."
+                "Open Orbit on your phone on the same Wi-Fi network"
+                + ("" if ble else ", or with Bluetooth on,")
+                + " and it will appear here. You can also add it by address."
             )
             hint.setProperty("role", "muted")
             hint.setWordWrap(True)
@@ -447,13 +532,14 @@ class DevicesPage(QWidget):
         self._extras.append(lbl)
         self.rows_box.addWidget(lbl)
 
-    def show_message(self, text: str, error: bool = False) -> None:
+    def show_message(self, text: str, error: bool = False, detail: str = "") -> None:
         self.message.setProperty("role", "error" if error else "muted")
         self.message.style().unpolish(self.message)
         self.message.style().polish(self.message)
         self.message.setText(text)
+        self.message.setToolTip(detail)
         self.message.show()
-        self._msg_timer.start(6000)
+        self._msg_timer.start(MESSAGE_VISIBLE_MS)
 
     def connect_address(self) -> None:
         try:
@@ -466,8 +552,9 @@ class DevicesPage(QWidget):
             self.add_button.setEnabled(self.client.connected)
             self.add_button.setText("Connect")
             if error:
+                target = f"[{host}]:{port}" if ":" in host else f"{host}:{port}"
                 self.show_message(
-                    f"Couldn't connect to {host}:{port}: {error.get('message') or error.get('code')}", error=True
+                    connect_failure(error, target), error=True, detail=str(error.get("message") or error.get("code"))
                 )
             else:
                 self.address.clear()
@@ -549,7 +636,13 @@ class Panel(QWidget):
         self._ticker.setInterval(TICK_MS)
         self._ticker.timeout.connect(lambda: self.activities_page.tick(now_ms()))
 
-        for sig in (client.connectedChanged, client.devicesChanged, client.activitiesChanged, client.statusChanged):
+        for sig in (
+            client.connectedChanged,
+            client.responsiveChanged,
+            client.devicesChanged,
+            client.activitiesChanged,
+            client.statusChanged,
+        ):
             sig.connect(self._update_header)
         client.activitiesChanged.connect(self._fit_height)
         self.show_activities()
@@ -581,6 +674,8 @@ class Panel(QWidget):
         c = self.client
         if not c.connected:
             text = "orbitd not running - reconnecting"
+        elif not c.responsive:
+            text = "orbitd isn't responding"
         elif self.pages.currentWidget() is self.devices_page:
             text = f"Connected to orbitd on {c.status.get('name')}" if c.status.get("name") else "Connected to orbitd"
         else:

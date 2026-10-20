@@ -152,6 +152,37 @@ async def test_frozen_daemon(paired):
     assert s["error"] == "orbitd isn't responding"
 
 
+async def test_frozen_daemon_shown_without_action(paired):
+    """orbitd frozen: the header says so on its own, and a click is refused instead of queued."""
+    w = paired
+    a = await w.applet()
+    await a.until(lambda s: card(s))
+    before = w.phone_actions("media.next")
+    w.daemon.send_signal(signal.SIGSTOP)
+    t = time.monotonic()
+    try:
+        st = await a.until(lambda s: s["header"] == "orbitd isn't responding", 15)
+        noticed = st["m"] - t
+        await asyncio.sleep(0.3)
+        cur = a.now()
+        t2 = time.monotonic()
+        a.cmd(f"click {MEDIA} media.next")
+        err = await a.until(lambda s: card(s) and card(s)["error"], 5)
+        refused_after = err["m"] - t2
+    finally:
+        w.daemon.send_signal(signal.SIGCONT)
+    back = await a.until(lambda s: s["header"] == "Test Phone connected", 10)
+    await asyncio.sleep(2)
+    applied = w.phone_actions("media.next") - before
+    measure("applet_frozen_daemon_heartbeat", noticed_after=round(noticed, 1), tooltip=cur["tooltip"],
+            menu=cur["menuHead"], click_error=card(err)["error"], refused_after=round(refused_after, 2),
+            back_after_resume=round(back["m"] - t2, 1), applied_after_resume=applied)
+    assert noticed < 10  # HEARTBEAT_MS + PROBE_TIMEOUT_MS = 8 s
+    assert (cur["tooltip"], cur["menuHead"]) == ("Orbit - orbitd isn't responding", "orbitd 0.1.0 - not responding")
+    assert card(err)["error"] == "orbitd isn't responding" and refused_after < 1
+    assert applied == 0  # the refused click was never queued behind the frozen orbitd
+
+
 async def test_click_while_daemon_dies_mid_action(paired):
     w = paired
     a = await w.applet()
@@ -173,3 +204,5 @@ async def test_click_while_daemon_dies_mid_action(paired):
     measure("applet_daemon_dies_mid_action_after", error_ever_shown=[card(x)["error"] for x in msg][:1])
     # The phone applied the press; the user was never told it may have gone through.
     assert applied == 0 or msg
+    assert card(msg[0])["error"] == "orbitd stopped - the action may have gone through"
+    assert card(msg[0])["errorRole"] == "notice"

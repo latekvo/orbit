@@ -121,8 +121,10 @@ def devices_summary(devices: list[Mapping[str, Any]]) -> str:
 
 
 # Error codes the client reports itself, next to orbitd's own (LOCAL_API.md).
-ORBITD_DOWN = "orbitd_down"
+ORBITD_DOWN = "orbitd_down"  # not connected: the request was never sent
+ORBITD_LOST = "orbitd_lost"  # the connection dropped while the request was in flight
 ORBITD_UNRESPONSIVE = "orbitd_unresponsive"
+ORBITD_CODES = (ORBITD_DOWN, ORBITD_LOST, ORBITD_UNRESPONSIVE)
 
 
 def action_failure(error: Mapping[str, Any] | None, result: Any, phone: str, label: str) -> tuple[str, bool]:
@@ -139,12 +141,60 @@ def action_failure(error: Mapping[str, Any] | None, result: Any, phone: str, lab
             return f"Reconnecting to {phone}...", True
         return f"{phone} is offline", False
     if code == "timeout":
-        return f"{phone} didn't respond", False
+        return f"{phone} didn't respond - the action may have gone through", True
     if code == "not_paired":
         return f"{phone} isn't paired", False
-    if code in (ORBITD_DOWN, ORBITD_UNRESPONSIVE):
+    if code == ORBITD_LOST:
+        return "orbitd stopped - the action may have gone through", True
+    if code in ORBITD_CODES:
         return message, False
     return f"{label}: {message or code or 'failed'}", False
+
+
+def connect_failure(error: Mapping[str, Any], target: str) -> str:
+    """A devices.connect error as a sentence about `target` (a device name or host:port)."""
+    code, message = error.get("code"), str(error.get("message") or "")
+    if code in ORBITD_CODES:
+        return message
+    if code == "timeout":
+        return f"{target} didn't answer in time"
+    if code == "not_connected":
+        return f"{target} isn't nearby"
+    if code == "not_found":
+        return f"{target} is no longer listed"
+    if " is device " in message:
+        return f"A different device answered for {target}"
+    if "newer address" in message:
+        return f"{target} moved to a new address - try again"
+    if "pair_request" in message:
+        return f"The connection to {target} dropped before pairing started"
+    if message.startswith("handshake"):
+        return f"{target} answered, but the secure connection failed"
+    return f"{target} isn't reachable"
+
+
+def bluetooth_problem(status: Mapping[str, Any], platform: str | None = None) -> tuple[str, str] | None:
+    """(headline, advice) when orbitd reports Bluetooth "unavailable", from its raw `bleError`."""
+    if status.get("ble") != "unavailable":
+        return None
+    platform = sys.platform if platform is None else platform
+    error = str(status.get("bleError") or "").lower()
+    if any(k in error for k in ("denied", "authoriz", "restricted", "permission", "authenticat")):
+        where = (
+            "System Settings > Privacy & Security > Bluetooth"
+            if platform == "darwin"
+            else "the system's Bluetooth (BlueZ / D-Bus) policy"
+        )
+        return "Orbit isn't allowed to use Bluetooth", f"Allow the app that runs orbitd in {where}."
+    if any(k in error for k in ("turned off", "powered", "notready", "not ready")):
+        return "Bluetooth is turned off", "Turn it on to reach your phone when it isn't on the same Wi-Fi."
+    if any(k in error for k in ("adapter", "unsupported", "central")):
+        return "No Bluetooth adapter found", "This computer reaches phones over Wi-Fi only."
+    if any(k in error for k in ("errno 2", "no such file", "serviceunknown", "org.bluez", "dbus")):
+        return "The Bluetooth service isn't running", "Start BlueZ (bluetooth.service) to use Bluetooth."
+    if "reset" in error or "trying to reconnect" in error:
+        return "Bluetooth is restarting", "Orbit uses it again as soon as it is back."
+    return "Bluetooth isn't available", "Orbit keeps retrying and reaches phones over Wi-Fi meanwhile."
 
 
 INT32_MAX = 2**31 - 1  # Qt's int range: slider and progress bar values

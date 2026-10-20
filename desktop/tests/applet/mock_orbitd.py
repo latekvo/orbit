@@ -401,6 +401,8 @@ class MockOrbitd:
         self.unresponsive = False
         self.action_delay_s: float = 0.0
         self.method_delay_s: dict[str, float] = {}  # other methods answered this late
+        self.fail_next: dict[str, dict] = {}  # method -> error answered once instead of a result
+        self.status_extra: dict[str, Any] = {}  # merged into the status result (e.g. "ble", "bleError")
         # How long activities.action waits for a "reconnecting" device (orbitd: 5 s).
         self.reconnect_hold_s: float = 5.0
         # How long a dropped device stays "reconnecting" before going "offline" (orbitd: 15 s).
@@ -1034,6 +1036,9 @@ class MockOrbitd:
             self.on_request(copy.deepcopy(record))
         if self.unresponsive:
             return
+        if (error := self.fail_next.pop(method, None)) is not None:
+            conn.send({"id": req_id, "error": error})
+            return
 
         if method == "activities.action":
             fail, self.fail_next_action = self.fail_next_action, None
@@ -1108,7 +1113,7 @@ class MockOrbitd:
         return v
 
     def _m_status(self, params):
-        return {"version": VERSION, "name": self._name, "deviceId": self._id}
+        return {"version": VERSION, "name": self._name, "deviceId": self._id, **self.status_extra}
 
     def _m_devices_list(self, params):
         return copy.deepcopy(self._devices)

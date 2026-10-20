@@ -37,10 +37,25 @@ async def status_rewriting_relay(listen: Path, target: Path, ble: str, error: st
     return await asyncio.start_unix_server(on_conn, str(listen), limit=64 * 1024 * 1024)
 
 
-async def test_bluetooth_unavailable_is_not_shown(paired):
+# bleError as the real orbitd reports it: bleak on macOS (str of a two-arg exception), Linux
+# without D-Bus / BlueZ (test_mpris_linux::test_ble_unavailable_is_reported), macOS permission denied.
+BLE_ERRORS = {
+    "off": ("Bluetooth is turned off", "Bluetooth is turned off"),
+    "macos-off": ("('Bluetooth device is turned off', <BleakBluetoothNotAvailableReason.POWERED_OFF: 3>)",
+                  "Bluetooth is turned off"),
+    "linux-no-bluez": ("[Errno 2] No such file or directory", "The Bluetooth service isn't running"),
+    "macos-denied": ("('Bluetooth access is denied by the user for the current application. Check macOS privacy "
+                     "settings.', <BleakBluetoothNotAvailableReason.DENIED_BY_USER: 4>)",
+                     "Orbit isn't allowed to use Bluetooth"),
+}
+
+
+@pytest.mark.parametrize("case", list(BLE_ERRORS))
+async def test_bluetooth_unavailable_is_not_shown(paired, case):
     w = paired
+    raw, headline = BLE_ERRORS[case]
     relay_path = w.dir / "r.sock"
-    server = await status_rewriting_relay(relay_path, w.sock, "unavailable", "Bluetooth is turned off")
+    server = await status_rewriting_relay(relay_path, w.sock, "unavailable", raw)
     try:
         from harness import Applet
         a = await Applet(relay_path, w.dir / "applet-ble").start()
@@ -49,17 +64,24 @@ async def test_bluetooth_unavailable_is_not_shown(paired):
         on = a.now()
         a.cmd("devices")
         await asyncio.sleep(0.4)
-        await a.shot("ble-unavailable-devices")
+        await a.shot(f"ble-unavailable-devices-{case}")
+        devices_page = a.now()
         await w.proxy.refuse()
         w.proxy.reset()
         off = await a.until(lambda s: not s["cards"], 25)
         a.cmd("activities")
         await asyncio.sleep(0.4)
-        await a.shot("ble-unavailable-offline")
+        await a.shot(f"ble-unavailable-offline-{case}")
         text = json.dumps(a.now()).lower()
-        measure("applet_ble_unavailable", header=on["header"], menu=on["menuHead"], offline_empty=off["empty"],
+        measure(f"applet_ble_unavailable_{case}", header=on["header"], menu=on["menuHead"],
+                tooltip=on["tooltip"], offline_empty=off["empty"], notice=devices_page["bluetoothNotice"],
                 mentions_bluetooth="bluetooth is turned off" in text or "unavailable" in text)
-        assert "bluetooth is turned off" in text or "bluetooth unavailable" in text
+        if case == "off":
+            assert "bluetooth is turned off" in text or "bluetooth unavailable" in text
+        assert on["tooltip"] == f"Orbit - Test Phone connected\n{headline}"
+        assert headline in devices_page["bluetoothNotice"]
+        assert raw == headline or raw not in devices_page["bluetoothNotice"]
+        assert off["empty"][1].endswith(f"{headline}, so Orbit can only use Wi-Fi.")
     finally:
         server.close()
 

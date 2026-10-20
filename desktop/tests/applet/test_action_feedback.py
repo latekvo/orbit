@@ -87,7 +87,11 @@ def test_pending_spinner_tracks_the_pressed_toggle_only(qtbot, client, mock):
 @pytest.mark.parametrize(
     "error, text, role",
     [
-        ({"code": "timeout", "message": "phone did not answer"}, "Pixel 8 didn't respond", "error"),
+        (
+            {"code": "timeout", "message": "phone did not answer"},
+            "Pixel 8 didn't respond - the action may have gone through",
+            "notice",
+        ),
         ({"code": "not_connected", "message": "reconnecting"}, "Reconnecting to Pixel 8...", "notice"),
         ({"code": "not_connected", "message": "device is not connected"}, "Pixel 8 is offline", "error"),
         (
@@ -115,7 +119,7 @@ def test_action_outliving_the_client_bound_with_orbitd_alive_blames_the_phone(qt
     mock.action_delay_s = 30 / SCALE
     qtbot.mouseClick(next_button(card), Qt.MouseButton.LeftButton)
     qtbot.waitUntil(lambda: card.error.isVisibleTo(panel), timeout=3000)
-    assert card.error.text() == "Pixel 8 didn't respond"
+    assert card.error.text() == "Pixel 8 didn't respond - the action may have gone through"
     assert [r["method"] for r in mock.requests][-1] == "status"  # the probe that cleared orbitd
 
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import logging
+import time
 from collections import OrderedDict
 from collections.abc import Callable
 from typing import Any
@@ -13,7 +14,7 @@ from PySide6.QtCore import QByteArray, QObject, QTimer, Signal
 from PySide6.QtGui import QPixmap
 from PySide6.QtNetwork import QLocalSocket
 
-from .model import ORBITD_DOWN, ORBITD_UNRESPONSIVE
+from .model import ORBITD_CODES, ORBITD_DOWN, ORBITD_LOST, ORBITD_UNRESPONSIVE
 
 log = logging.getLogger("orbit.applet.client")
 
@@ -35,11 +36,15 @@ REQUEST_TIMEOUTS_MS = {
 QUICK_TIMEOUT_MS = 5_000
 # After a timeout, a `status` ping tells a slow phone from an unresponsive orbitd.
 PROBE_TIMEOUT_MS = 3_000
+# `status` is polled this often: orbitd sends no event for Bluetooth changes, and a frozen orbitd
+# keeps its socket open.
+HEARTBEAT_MS = 5_000
 ART_CACHE_SIZE = 64
 
 
 class DaemonClient(QObject):
     connectedChanged = Signal(bool)
+    responsiveChanged = Signal(bool)
     statusChanged = Signal(dict)
     devicesChanged = Signal(list)
     pairingsChanged = Signal(list)
@@ -50,6 +55,8 @@ class DaemonClient(QObject):
         super().__init__(parent)
         self.socket_path = str(socket_path)
         self.connected = False
+        # False while connected to an orbitd that stopped answering (see HEARTBEAT_MS).
+        self.responsive = True
         self.status: dict = {}
         self.devices: list[dict] = []
         self.pairings: list[dict] = []
@@ -64,6 +71,7 @@ class DaemonClient(QObject):
         self._art_requested: set[str] = set()
         self._backoff = RECONNECT_MIN_MS
         self._stopped = False
+        self._last_rx = 0.0
 
         self._sock = QLocalSocket(self)
         self._sock.connected.connect(self._on_connected)
@@ -72,6 +80,9 @@ class DaemonClient(QObject):
         self._sock.readyRead.connect(self._on_ready_read)
         self._retry = QTimer(self, singleShot=True)
         self._retry.timeout.connect(self._connect)
+        self._heartbeat = QTimer(self)
+        self._heartbeat.setInterval(HEARTBEAT_MS)
+        self._heartbeat.timeout.connect(self._ping)
 
     # -- lifecycle -------------------------------------------------------------------------
 
@@ -96,15 +107,35 @@ class DaemonClient(QObject):
         self._backoff = RECONNECT_MIN_MS
         self._buf = b""
         self.connected = True
+        self.responsive = True
         self._art_requested.clear()
         self.connectedChanged.emit(True)
         self.request("status", callback=self._on_status)
         self.request("subscribe")
+        self._heartbeat.start()
 
     def _on_status(self, result: Any, error: dict | None) -> None:
-        if isinstance(result, dict):
+        if isinstance(result, dict) and result != self.status:
             self.status = result
             self.statusChanged.emit(result)
+
+    def _ping(self) -> None:
+        sent = time.monotonic()
+
+        def done(result: Any, error: dict | None) -> None:
+            if error is None:
+                self._on_status(result, None)
+            elif error.get("code") == ORBITD_UNRESPONSIVE and self._last_rx < sent:
+                self._set_responsive(False)
+
+        self.request("status", callback=done, _probe=True)
+
+    def _set_responsive(self, responsive: bool) -> None:
+        if responsive != self.responsive:
+            if not responsive:
+                log.warning("orbitd isn't responding")
+            self.responsive = responsive
+            self.responsiveChanged.emit(responsive)
 
     def _on_error(self, err: QLocalSocket.LocalSocketError) -> None:
         if err != QLocalSocket.LocalSocketError.PeerClosedError:
@@ -125,13 +156,15 @@ class DaemonClient(QObject):
             self._backoff = min(self._backoff * 2, RECONNECT_MAX_MS)
 
     def _set_disconnected(self) -> None:
+        self._heartbeat.stop()
         pending, self._pending = self._pending, {}
         for cb, timer, _ in pending.values():
             timer.stop()
             if cb:
-                cb(None, {"code": ORBITD_DOWN, "message": "orbitd is not running"})
+                cb(None, {"code": ORBITD_LOST, "message": "lost the connection to orbitd"})
         was = self.connected
         self.connected = False
+        self.responsive = True
         if self.devices or self.pairings or self.activities:
             self.devices, self.pairings, self.activities = [], [], []
             self.devicesChanged.emit([])
@@ -145,9 +178,15 @@ class DaemonClient(QObject):
     def request(
         self, method: str, params: dict | None = None, callback: Callback | None = None, *, _probe: bool = False
     ) -> int | None:
-        if not self.connected:
+        if not self.connected or not (self.responsive or _probe):
+            # Not sent: a request queued behind a frozen orbitd would run whenever it wakes up.
+            error = (
+                {"code": ORBITD_DOWN, "message": "orbitd is not running"}
+                if not self.connected
+                else {"code": ORBITD_UNRESPONSIVE, "message": "orbitd isn't responding"}
+            )
             if callback:
-                QTimer.singleShot(0, lambda: callback(None, {"code": ORBITD_DOWN, "message": "orbitd is not running"}))
+                QTimer.singleShot(0, lambda: callback(None, error))
             return None
         rid = self._next_id
         self._next_id += 1
@@ -181,7 +220,11 @@ class DaemonClient(QObject):
         )
 
     def _on_ready_read(self) -> None:
-        self._buf += bytes(self._sock.readAll().data())
+        data = bytes(self._sock.readAll().data())
+        if data:
+            self._last_rx = time.monotonic()
+            self._set_responsive(True)
+        self._buf += data
         *lines, self._buf = self._buf.split(b"\n")
         for line in lines:
             if not line.strip():
@@ -251,7 +294,7 @@ class DaemonClient(QObject):
     def _on_art(self, key: str, result: Any, error: dict | None) -> None:
         if error or not isinstance(result, dict):
             log.debug("art %s unavailable: %s", key, error)
-            if error and error.get("code") in ("not_connected", "timeout", ORBITD_DOWN, ORBITD_UNRESPONSIVE):
+            if error and error.get("code") in ("not_connected", "timeout", *ORBITD_CODES):
                 self._art_requested.discard(key)
             return
         pix = QPixmap()

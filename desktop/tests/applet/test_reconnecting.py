@@ -93,7 +93,12 @@ def test_devices_summary():
             True,
         ),
         ({"code": "not_connected", "message": "device is not connected"}, None, "Pixel 8 is offline", False),
-        ({"code": "timeout", "message": "phone did not answer"}, None, "Pixel 8 didn't respond", False),
+        (
+            {"code": "timeout", "message": "phone did not answer"},
+            None,
+            "Pixel 8 didn't respond - the action may have gone through",
+            True,
+        ),
         ({"code": "not_paired", "message": "device is not paired"}, None, "Pixel 8 isn't paired", False),
         ({"code": model.ORBITD_DOWN, "message": "orbitd is not running"}, None, "orbitd is not running", False),
         (
