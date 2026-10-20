@@ -37,6 +37,7 @@ R is the GATT peripheral, I is the central.
 | Service | `616dfa5c-069e-4839-8335-87edbeb2c1a5` |
 | RX characteristic (I -> R, *write with response*) | `616dfa5d-069e-4839-8335-87edbeb2c1a5` |
 | TX characteristic (R -> I, *notify*) | `616dfa5e-069e-4839-8335-87edbeb2c1a5` |
+| PSM characteristic (*read*, optional) | `616dfa5f-069e-4839-8335-87edbeb2c1a5` |
 
 - Advertisement: the service UUID. Scan response: Service Data for the service UUID
   carrying the first 8 bytes of the raw deviceId (16 hex chars -> 8 bytes), plus the
@@ -45,6 +46,24 @@ R is the GATT peripheral, I is the central.
 - The byte stream is split into chunks of at most `ATT_MTU - 3` bytes (min 20, max 512).
   Chunk boundaries carry no meaning; the receiver concatenates chunks into the stream.
 - R must wait for `onNotificationSent` (or equivalent) before sending the next chunk.
+
+#### 1.2.1 L2CAP channel (preferred)
+
+GATT notifications cost R a confirmation round trip each (Android: about 3 connection
+intervals), which caps the R -> I stream at a few KB/s. An LE credit-based L2CAP channel
+(connection-oriented channel, CoC) carries the same byte stream with link-layer flow control
+and no per-packet round trip.
+
+- R that accepts L2CAP channels exposes the PSM characteristic: its value is the PSM as an
+  unsigned 16-bit little-endian integer. The channel needs no Bluetooth pairing or link
+  encryption (the session is encrypted end to end, 3-4).
+- I that supports L2CAP reads the PSM after service discovery and opens a channel to it on the
+  existing LE connection. **The session runs over the channel instead of RX/TX**: I does not
+  enable notifications on TX, and the session starts when R accepts the channel.
+- If the characteristic is absent, cannot be read, or the channel does not open within 5 s,
+  I falls back to RX/TX on the same connection.
+- The session ends when either side closes the channel or the link drops. R closes the LE
+  connection when a channel session ends, as for a GATT session.
 
 ## 2. Framing
 
