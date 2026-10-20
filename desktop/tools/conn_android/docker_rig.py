@@ -63,15 +63,16 @@ def teardown() -> None:
 
 
 class DockerRig(Rig):
-    def __init__(self, api_port: int, action_delay_ms: int = 0) -> None:
+    def __init__(self, api_port: int, action_delay_ms: int = 0, art_burst: int = 4) -> None:
         super().__init__(action_delay_ms=action_delay_ms)
+        self.art_burst = art_burst
         self.api_port = api_port
         self.phone_host = PHONE_IP
         self.phone_port = 47820
 
     # phone
     def start_phone(self) -> None:
-        dx(PHONE, f"exec /jvm/bin/jvmphone /state 47820 {self.action_delay_ms} >> /state.log 2>&1", detach=True)
+        dx(PHONE, f"ART_BURST={self.art_burst} exec /jvm/bin/jvmphone /state 47820 {self.action_delay_ms} >> /state.log 2>&1", detach=True)
         self.mark("phone_start")
 
     async def wait_phone_listening(self, timeout: float = 30) -> None:

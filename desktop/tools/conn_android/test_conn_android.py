@@ -241,3 +241,18 @@ async def test_lossy_link_actions_all_succeed(drig):
     drig.netem(None)
     assert all(r == {"ok": True} for _, r in results), results
     assert len(drig.execs()) == 10
+
+
+@docker_only
+async def test_bug_action_result_queued_behind_album_art(drig):
+    """BLE-like 8 KB/s link, a media app posts new album art (4 x 30 KB): the phone applies the
+    action at once, but its action_result waits behind ~160 KB of art on the single send queue,
+    so the laptop reports `timeout` for an action that was applied ~10 s earlier."""
+    drig.netem("rate 64kbit")
+    await drig.client.call("activities.action", {"device": drig.device_id, "activity": "counter", "action": "notif.1"})
+    t = time.monotonic()
+    _, result = await drig.action()
+    applied = len(drig.execs())
+    drig.netem(None)
+    assert applied == 1
+    assert result == {"ok": True}, f"{result} after {time.monotonic() - t:.1f} s although applied"

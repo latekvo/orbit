@@ -62,7 +62,10 @@ fun main(args: Array<String>) {
             put("kind", "generic")
             put("app", buildJsonObject { put("id", "dev.orbit.jvmphone"); put("name", "JvmPhone") })
             put("title", "count ${count.get()}")
-            put("actions", buildJsonArray { add(buildJsonObject { put("id", "notif.0"); put("label", "Increment") }) })
+            put("actions", buildJsonArray {
+                add(buildJsonObject { put("id", "notif.0"); put("label", "Increment") })
+                add(buildJsonObject { put("id", "notif.1"); put("label", "Art burst") })
+            })
             put("updatedMs", System.currentTimeMillis())
         })
     }
@@ -80,6 +83,24 @@ fun main(args: Array<String>) {
             }
         }
         override fun performAction(activity: JsonObject, actionId: String, value: JsonElement?, done: (Boolean, String?) -> Unit) {
+            if (actionId == "notif.1") {
+                // Like a media app posting new album art: ART_BURST activities, each with fresh ~30 KB art.
+                // Answered first: the burst stands for notifications posted independently of any action.
+                done(true, null)
+                val n = System.getenv("ART_BURST")?.toInt() ?: 4
+                val rnd = java.util.Random()
+                Thread.sleep(200)
+                repeat(n) { i ->
+                    val art = dev.orbit.protocol.Art("image/jpeg", ByteArray(30_000).also { rnd.nextBytes(it) })
+                    hub.upsert(buildJsonObject {
+                        put("id", "media:$i"); put("kind", "media"); put("title", "track ${System.nanoTime()}")
+                        put("app", buildJsonObject { put("id", "app$i"); put("name", "App $i") })
+                        put("artKey", art.key); put("actions", JsonArray(emptyList())); put("updatedMs", System.currentTimeMillis())
+                    }, listOf(art))
+                }
+                log("ART burst n=$n")
+                return
+            }
             scheduler.schedule({
                 val n = count.incrementAndGet()
                 log("EXEC action=$actionId n=$n")

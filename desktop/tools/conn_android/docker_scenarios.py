@@ -150,6 +150,58 @@ async def netem_loss60():
     return await netem_run("loss 60%", 15, 3)
 
 
+async def art_burst(rate: str, n: int = 4) -> dict:
+    """A media app posts new album art while the link is BLE-slow: is an action stuck behind it?"""
+    rig = await paired(art_burst=n)
+    try:
+        rig.netem(f"rate {rate}")
+        wall0 = int(time.time() * 1000)
+        burst = await rig.client.call(
+            "activities.action", {"device": rig.device_id, "activity": "counter", "action": "notif.1"}
+        )
+        rig.mark("burst answered", burst)
+        lat, res = await rig.action()
+        rig.mark("increment answered", [lat, res])
+        for _ in range(60):
+            if len(rig.execs()) >= 1 and sum(1 for a in rig.activities if a["id"].startswith("media:")) == n:
+                break
+            await asyncio.sleep(1)
+        rig.mark("burst delivered")
+        rig.netem(None)
+        await asyncio.sleep(1)
+        retry = await rig.action()
+        return {
+            "rate": rate,
+            "increment_during_burst": [lat, res],
+            "exec_times_s": [phone_ms_to_rig(rig, ln, wall0) for ln in rig.execs()],
+            "retry": retry,
+            "timeline": [t for t in rig.timeline if t[1] != "activities"],
+            **closes(rig),
+        }
+    finally:
+        await rig.close()
+
+
+@scenario
+async def art_burst_64kbit():
+    return await art_burst("64kbit")
+
+
+@scenario
+async def art_burst_one_art_64kbit():
+    return await art_burst("64kbit", 1)
+
+
+@scenario
+async def art_burst_one_art_32kbit():
+    return await art_burst("32kbit", 1)
+
+
+@scenario
+async def art_burst_256kbit():
+    return await art_burst("256kbit")
+
+
 @scenario
 async def ip_change():
     """Wi-Fi reconnects with a different DHCP lease; orbitd only knows the manual address."""
