@@ -42,9 +42,13 @@ jobs:
           ./gradlew --no-daemon -PversionName="$VERSION"
           :protocol:test :app:testDebugUnitTest :app:assembleDebug :app:lintDebug :app:assembleRelease
       - name: Check signature
+        # Installed apps only accept updates signed with this certificate.
+        env:
+          CERT_SHA256: ca169ca1f72f204350cb183b6fb461d9a18d338997a9d22b898347ac8a47e9ca
         run: |
           apksigner="$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -1)"
-          "$apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk
+          "$apksigner" verify --print-certs app/build/outputs/apk/release/app-release.apk | tee certs.txt
+          grep -q "certificate SHA-256 digest: $CERT_SHA256" certs.txt || { echo "APK not signed with the release certificate"; exit 1; }
           cp app/build/outputs/apk/release/app-release.apk "orbit-companion-$VERSION.apk"
       - name: Publish
         env:
