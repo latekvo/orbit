@@ -56,6 +56,36 @@ Open **Orbit**, then grant notification access, notifications and Bluetooth, and
 battery-optimization exemption. On ColorOS, MIUI, EMUI and One UI also follow the in-app hint
 to allow auto-start, or the OS will kill the companion in the background.
 
+Or install `orbit-companion-<version>.apk` from the
+[latest release](https://github.com/latekvo/orbit/releases/latest).
+
+### Updating the Android app
+
+The app checks the latest GitHub release when opened (at most hourly) and from its background
+service about once a day. A newer version shows a card at the top of the app and an
+**Updates** notification. **Update** opens the APK in the browser: once it has downloaded,
+open it and confirm **Update**. The first time, Android asks you to allow the browser to
+install apps, and Chrome warns that the file might be harmful. A release updates an earlier
+release in place and keeps pairings; a build signed with another key (e.g. your own debug build)
+must be uninstalled first. **Not now** hides that version until a newer one is released.
+
+### Releasing
+
+```sh
+git tag v0.2.0 && git push origin v0.2.0
+```
+
+The `Release` workflow runs the tests and lint, builds the signed release APK with
+versionName `0.2.0` and versionCode `major*10000 + minor*100 + patch` (minor and patch stay
+below 100), and publishes the GitHub release with `orbit-companion-0.2.0.apk` attached. It signs
+with the `ORBIT_KEYSTORE_B64`, `ORBIT_KEYSTORE_PASSWORD`, `ORBIT_KEY_ALIAS` and
+`ORBIT_KEY_PASSWORD` secrets. Locally, `./gradlew :app:assembleRelease -PversionName=X.Y.Z`
+builds `app-release-unsigned.apk` unless `ORBIT_KEYSTORE` (a path) and the other three
+variables, or the `orbit.keystore`, `orbit.keystorePassword`, `orbit.keyAlias` and
+`orbit.keyPassword` Gradle properties, are set. To test the updater against a local server,
+build debug with `-PupdateApiUrl=http://10.0.2.2:<port>/...` (debug builds allow plain HTTP to
+`10.0.2.2` and `localhost`).
+
 ### Pairing
 
 1. Keep both devices on the same Wi-Fi, or within Bluetooth range.

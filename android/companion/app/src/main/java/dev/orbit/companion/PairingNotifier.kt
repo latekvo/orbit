@@ -12,6 +12,7 @@ import dev.orbit.protocol.ResponderSession
 
 const val CHANNEL_PAIRING = "pairing"
 const val CHANNEL_SERVICE = "service"
+const val CHANNEL_UPDATES = "updates"
 
 fun ensureChannels(context: Context) {
     val nm = context.getSystemService(NotificationManager::class.java)
@@ -21,6 +22,7 @@ fun ensureChannels(context: Context) {
         },
     )
     nm.createNotificationChannel(NotificationChannel(CHANNEL_PAIRING, "Pairing requests", NotificationManager.IMPORTANCE_HIGH))
+    nm.createNotificationChannel(NotificationChannel(CHANNEL_UPDATES, "Updates", NotificationManager.IMPORTANCE_LOW))
 }
 
 /** High-priority notification asking the user to confirm a pairing code. */

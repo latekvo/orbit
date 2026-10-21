@@ -12,6 +12,8 @@ import android.content.pm.ServiceInfo
 import android.os.IBinder
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.update
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
 
 /** Foreground service hosting the TCP server, DNS-SD registration and the BLE peripheral. */
 class OrbitService : Service() {
@@ -20,6 +22,7 @@ class OrbitService : Service() {
     private var nsd: NsdAdvertiser? = null
     private var ble: BleServer? = null
     private var foreground = false
+    private var updateTicks: ScheduledFuture<*>? = null
 
     private val btReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -59,6 +62,12 @@ class OrbitService : Service() {
             this, btReceiver, IntentFilter(BluetoothAdapter.ACTION_STATE_CHANGED), ContextCompat.RECEIVER_NOT_EXPORTED,
         )
         startBle()
+        // The scheduler's clock stops while the device sleeps, so this never wakes it; the check
+        // itself runs once a day by the wall clock.
+        val updater = Updater.get(this)
+        updateTicks = orbit.scheduler.scheduleWithFixedDelay(
+            { updater.checkIfDue(Updater.DAY_MS, "service") }, UPDATE_TICK_MIN, UPDATE_TICK_MIN, TimeUnit.MINUTES,
+        )
         EventLog.log("service created: tcp port $port")
     }
 
@@ -100,6 +109,7 @@ class OrbitService : Service() {
     override fun onDestroy() {
         EventLog.log("service destroyed")
         runCatching { unregisterReceiver(btReceiver) }
+        updateTicks?.cancel(false)
         val ending = orbit.stopServing("service stopped")
         nsd?.stop()
         tcp?.stop()
@@ -129,6 +139,7 @@ class OrbitService : Service() {
     companion object {
         private const val NOTIFICATION_ID = 1
         private const val BYE_FLUSH_MS = 1_000L
+        private const val UPDATE_TICK_MIN = 60L
         const val ACTION_ENSURE_BLE = "dev.orbit.companion.ENSURE_BLE"
         const val ACTION_RENAME = "dev.orbit.companion.RENAME"
         private const val EXTRA_SOURCE = "source"

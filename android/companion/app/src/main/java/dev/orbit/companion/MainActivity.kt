@@ -106,6 +106,8 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         val orbit = Orbit.get(this)
         OrbitService.start(this, source = "app opened")
+        // A recreated activity's intent was handled by its first instance.
+        if (savedInstanceState == null) handleUpdateIntent(intent)
         setContent {
             val dark = isSystemInDarkTheme()
             val colors = when {
@@ -122,9 +124,20 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleUpdateIntent(intent)
+    }
+
+    /** The update notification's tap. */
+    private fun handleUpdateIntent(intent: Intent?) {
+        if (intent?.action == Updater.ACTION_UPDATE) Updater.get(this).update(this)
+    }
+
     override fun onResume() {
         super.onResume()
         Orbit.get(this).uiVisible = true
+        Updater.get(this).checkIfDue(Updater.HOUR_MS, "app opened")
     }
 
     override fun onPause() {
@@ -157,6 +170,9 @@ class MainActivity : ComponentActivity() {
         val activities by orbit.activities.collectAsStateWithLifecycle()
         val connected by orbit.listenerConnected.collectAsStateWithLifecycle()
         val name by orbit.deviceNameFlow.collectAsStateWithLifecycle()
+        val updater = remember { Updater.get(this) }
+        val update by updater.offer.collectAsStateWithLifecycle()
+        val updateAttempt by updater.attempt.collectAsStateWithLifecycle()
         var nameDraft by remember { mutableStateOf(orbit.customName ?: "") }
         var resumeTick by remember { mutableStateOf(0) }
         val owner = LocalLifecycleOwner.current
@@ -223,6 +239,30 @@ class MainActivity : ComponentActivity() {
             ),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
+            update?.let { u ->
+                item {
+                    Card(Modifier.fillMaxWidth()) {
+                        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("Update available: v${u.version} (installed ${BuildConfig.VERSION_NAME})", fontWeight = FontWeight.Bold)
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(onClick = { updater.update(this@MainActivity) }) { Text("Update") }
+                                TextButton(onClick = { updater.dismiss() }) { Text("Not now") }
+                            }
+                            updateAttempt?.takeIf { it.version == u.version }?.let {
+                                Text(
+                                    if (it.opened) {
+                                        "Downloading in your browser - open the file when it finishes to install. " +
+                                            "If Android asks, allow your browser to install apps."
+                                    } else {
+                                        "No browser could open the download. Get it from github.com/latekvo/orbit/releases."
+                                    },
+                                    style = MaterialTheme.typography.bodySmall,
+                                )
+                            }
+                        }
+                    }
+                }
+            }
             item {
                 Text("Orbit", style = MaterialTheme.typography.headlineMedium)
                 Text("$name · ${orbit.deviceId}", style = MaterialTheme.typography.bodySmall)
